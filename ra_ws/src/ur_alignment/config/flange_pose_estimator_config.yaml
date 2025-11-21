@@ -1,0 +1,141 @@
+# =========================================================
+# Debug parameters
+# =========================================================
+DEBUG_PARAMS:
+  DETAILS: false       # Print details of the process
+  MORE_DETAILS: false  # Print more details of the process
+  DRAW_RESULTS: true # Draw the pose on the frame
+
+
+# =========================================================
+# Camera calibration parameters
+# =========================================================
+CAMERA_PARAMETERS:
+  FX: 1342.0130556181671  # [pix] Focal length in the x-direction
+  FY: 1340.1863804243305  # [pix] Focal length in the y-direction
+  UX: 959.5               # [pix] Principal point x-coordinate
+  UY: 539.5               # [pix] Principal point y-coordinate
+  # Distortion coefficients []
+  DISTORTION_COEFFS: [
+                       0.18111418178898067,
+                      -0.56708177596111808,
+                      -0.00043379810025201572,
+                      -0.0069193676707635602,
+                       0.50620572964510557
+                    ]  
+  RESOLUTION: [1920, 1080]  # [pix] Camera resolution [width, height]
+
+
+# =========================================================
+# Detection parameters
+# =========================================================
+DETECTION_PARAMS:
+  MODEL_PATH: "src/ur_alignment/models/detection_model.pt"       # Path to the detection model
+  MIN_CONFIDENCE_HOLE: 0.5    # [0-1] Confidence threshold for holes
+  MIN_CONFIDENCE_FLANGE: 0.5  # [0-1] Confidence threshold for flanges
+  BB_INCREASE_RATIO: 0.15     # [%] Expansion ratio for the extracted ROI around a hole
+
+
+# =========================================================
+# Ellipse extraction parameters --> RANSAC Method
+# =========================================================
+# These parameters are highly dependent on illumination conditions and flange cleanliness, and they are very sensitive to changes. 
+# If pose estimation fails, these parameters are most likely responsible. They must be tuned empirically.
+CONTOUR_PARAMS:
+  BILATERAL_DIAMETER: 2      # [pix] Diameter of the bilateral filter kernel
+  SIGMA_COLOR: 10            # [pix] Filter sigma in color space
+  SIGMA_SPACE: 230           # [pix] Filter sigma in coordinate space
+  PEAK1: 110                 # [] Desired intensity for the first histogram peak
+  PEAK2: 200                 # [] Desired intensity for the second histogram peak
+  CANNY_THRESHOLD_LOW: 90    # [] Lower threshold for Canny edge detection
+  CANNY_THRESHOLD_HIGH: 255  # [] Upper threshold for Canny edge detection
+
+RANSAC_PARAMS:
+  MIN_NUM_PIXELS_CANNY : 16     # [] Minimun canny pixels number to start the RANSAC
+  MIN_ELLIPSE_AREA_RATIO: 0.2   # [] Minimun ratio (ELlipse_Area/ROI/Area) to accept the ellipse
+  DISTANCE_AREA_INCREASE: 1.13  # [] Parameter for distance-ellipse membership calculation      
+  DISTANCE_AREA_DECREASE: 0.87  # [] Parameter for distance-ellipse membership calculation      
+  MAX_NUM_GOOD_ITERATIONS: 20   # [] Max number of iterations of the RANSAC that pass every check    
+  MAX_NUM_ITERATIONS: 100       # [] Max number of iterations of the RANSAC 
+  MAX_PERCENTAGE_INLIERS: 1     # [] If the current percentage of inliers is >= of this, the RANSAC stops
+  MIN_INLIERS_OVER_TOTAL_RATIO: 0.4  # [] Min ratio (inliers/total_canny_pixels) for a solution to be accepted
+  MIN_INLIERS_OVER_ELLIPSE_PERIMETER_RATIO: 0.4 # [] Min ratio (inliers/ellipse perimeter) for a solution to be accepted
+  
+
+# =========================================================
+# Ellipse extraction parameters --> Segmentation Method
+# =========================================================
+SEGMENTATION_PARAMS:
+  MODEL_PATH: "src/ur_alignment/models/segmentation_model.pth"       # Path to the segmentation model
+  # These should be changed if, in the future, the net will be trained with other configurations
+  MIN_CONFIDENCE_HOLE: 0.7  # [] Confidence threshold for holes [0-1]
+  ROI_SIZE: [256, 256]      # [pix] Size of the square ROI around a detected hole
+  ENCODER_NAME: "resnet50"  # [] Encoder name for the segmentation model
+  NUM_IN_CHANNELS: 1        # [] Number of input channels for the segmentation model /--/ 3 for RGB ROI, 1 for grayscale ROI
+
+
+# =========================================================
+# Ellipse extraction method choice
+# =========================================================
+# 0: RANSAC METHOD
+# 1: SEGMENTATION METHOD
+METHOD_CHOICE: 1
+
+
+# =========================================================
+# Pose estimation parameters
+# =========================================================
+# NOTE: TRESHOLD_HOMOGRAPHY_DISTANCE should only be tuned. The others should be kept as they are
+RANSAC_ITERATIVE_PNP_PARAMS:
+  # [pix] Max distance between a center of an extracted ellipse,
+  #       and the projection of the model center, using the previous pose (R,t) 
+  TRESHOLD_TRACKING_REPROJECTION_ERROR: 10
+  # [pix] Max distance between the center of a fitted hole center (ellipse),
+  #       and its corresponding model hole center, projected using the coarse pose (R,t)
+  TRESHOLD_BF_REPROJECTION_ERROR: 10
+  # [] Min scalar product between the normal to an extracted 3D hole using J.P., 
+  #    and the z-axis of the coarse pose (R,t)
+  TRESHOLD_SCALAR: 0.98
+  # [pix] Max distance between the projection of the 3D hole center, estimated using J.P.,
+  #       and its corresponding model hole center, projected using the coarse pose (R,t)
+  TRESHOLD_COARSE_REPROJECTION_ERROR: 8 
+  # [pix] Max distance between the projection of the 3D hole center, estimated using J.P.,
+  #       and its corresponding model hole center, projected using the coarse pose (R,t)
+  TRESHOLD_REFINED_REPROJECTION_ERROR: 5
+  #      Max distance between each homographic projection of the imagepoints on the flange, and the
+  #      corresponding center of the hole of the flange (that generated that imagepoint)
+  TRESHOLD_HOMOGRAPHY_DISTANCE: 0.001
+
+
+# =========================================================
+# Flange CAD 
+# =========================================================
+# Here is described how the flange CAD is done
+# The flange is defined as a series of holes crowns, laying on parallel planes
+# For now, only circular flanges are considered, but the method can be easily extended to non-circular geometries if required.
+FLANGE_PARAMS:
+  # [] minimum number of holes still "active" in the pipeline, to continue
+  #   (num holes detected --> num holes with contour extracted -->  num holes...)
+  MINIMUM_NUM_ACTIVE_HOLES: 6
+
+  CROWNS:
+    # ---------------- First crown 
+    - CROWN_RADIUS: 0.065125  # [m]
+      HOLE_RADIUS: 0.0048     # [m]
+      HEIGHT: 0               # [m]
+      NUMBER_OF_HOLES: 16  # [] Assumed uniformely distributed (same center angle)
+      SKIP_INDICES: []     # [] Missing holes indices. e.g. --> [1, 3] if second and forth holes are not present
+      ANGLE_OFFSET: 0      # [rad] The first hole is located at an angle "ANGLE_OFFSET" from the conventional "0" axis
+
+  # if needed, add more holes crowns...
+
+    # ---------------- Second crown
+    # - CROWN_RADIUS: 20.0
+    #   HOLE_RADIUS: 50.0
+    #   HEIGHT: 0
+    #   NUMBER_OF_HOLES: 16
+    #   SKIP_INDICES: [0, 2] 
+    #   ANGLE_OFFSET: 0.2
+     
+    # - ...
+
