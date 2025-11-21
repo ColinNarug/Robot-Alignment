@@ -1,0 +1,37 @@
+# =========================
+# Paths
+# =========================
+paths:
+  finetune_from: ""             #  Optional checkpoint to fine tune; empty string = start from scratch
+
+# =========================
+# Model (SMP U-Net)
+# =========================
+model:
+  encoder_name: "resnet50"      #  Backbone used by SMP U-Net (e.g., resnet18/34/50, efficientnet-b0, mit_b2) 
+  encoder_weights: "imagenet"   #  Pretrained weights for the encoder: "imagenet" or null/None for random init 
+  in_channels: 1                #  Number of input channels: 1=grayscale, 3=RGB
+
+# =========================
+# Training
+# =========================
+training:
+  learning_rate: 2.0e-4          #  Initial learning rate for the optimizer (AdamW in the trainer)
+  batch_size: 20                 #  --[CHANGE HERE]-- Mini-batch size for both train/val loaders  ---> IF YOU DO NOT HAVE ENOUGH GPU MEMORY, DECREASE THIS
+  epochs: 30                      # --[CHANGE HERE]-- Number of full passes over the training set ---> INCREASE IF YOU WANT TO TRAIN LONGER
+  val_over_total_frac: 0.2      #  Fraction of the dataset reserved for validation (e.g., 0.15 = 15%)
+  seed: 1                        #  Random seed for reproducibility (dataset split, init, etc.)
+  device: "cuda"                 #  "cuda" to use GPU if available, or "cpu" to force CPU
+  num_workers: 4                 #  DataLoader workers for parallel data loading
+  pin_memory: true               #  Pin memory in DataLoader (faster host -> GPU transfer on CUDA)
+  checkpoint_every: 5            #  Save a model checkpoint every N epochs (0 = never)
+  analysis_every: 5              #  Save loss plots every N epochs during training (final plots always saved)
+  warm_start: false              #  If true and finetune_from is set, load weights with non-strict matching
+
+# =========================
+# Inference / Analysis
+# =========================
+inference:
+  pred_threshold: 0.7            #  If the model thinks a pixel has a probability > pred_threshold of being "hole", it is classified as "hole"
+
+# Usually you should change only the parameters with the "--[CHANGE HERE]--" comment.

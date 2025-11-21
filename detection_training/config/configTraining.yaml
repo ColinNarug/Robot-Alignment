@@ -1,0 +1,9 @@
+path: /home/andrea/PAE_project/detection_training  # dataset root dir
+train: images/train 
+val: images/val  
+
+# Classes
+nc: 2
+names:
+  0: hole
+  1: flange

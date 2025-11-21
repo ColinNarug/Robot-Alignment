@@ -1,0 +1,81 @@
+# ===============================
+# ROS ws gitignore
+# ===============================
+
+# colcon / CMake build output
+build/
+install/
+log/
+
+# CMake auto-generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Python cache 
+__pycache__/
+*.pyc
+
+# Editor/IDE settings
+.vscode/
+.idea/
+
+# Miscellaneous
+commands.md
+*video_flange.zip
+
+
+ur_alignment_ws/*.png
+
+# ===============================
+# Detection training gitignore
+# ===============================
+
+# Bags
+*.bag
+
+# Images
+detection_training/images/train/*
+detection_training/images/val/*
+detection_training/labels/train/*
+detection_training/labels/val*
+
+# Labels: ignora solo i file .txt dentro labels/ e original/
+detection_training/**/*.txt
+detection_training/lables/val/3_Color_png.rf.a115df43d3a2c366b0ab12987b188274.txt
+detection_training/**/*.cache
+
+# Models
+detection_training/runs/
+detection_training/runs*
+detection_training/**/*.pt
+
+# Keep the YOLO base model
+**/yolo11n.pt
+!detection_training/yolo11
+
+detection_training/detection_training_venv*
+
+detection_training/original/*
+
+
+# ===============================
+# segmentation_training gitignore
+# ===============================
+
+# Python cache
+segmentation_training/**/__pycache__/
+segmentation_training/**/*.pyc
+
+# Training results
+segmentation_training/runs/
+
+# Virtual environments
+segmentation_training/.segmentation_venv/
+
+segmentation_training/roi_extraction_from_imgs/roi_extracted/*
+segmentation_training/json_to_mask/mask_labels/*
+
+
+
