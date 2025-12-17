@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>ur_alignment</name>
+  <name>uralignment_cpp</name>
   <version>0.0.0</version>
   <description>Autonomous Alignment to Four AprilTags Creating a Concentric Center as Target for Eye-in-Hand d435iRealSense Mounted to UR16e at Fermilab</description>
-  <maintainer email="nickolas.giffen@outlook.com">Nickolas Giffen</maintainer>
+  <maintainer email="nickolas.giffen@outlook.com">giffen</maintainer>
   <license>Apache-2.0</license>
 
    <!-- Build Dependencies required to build packages -->
@@ -12,7 +12,6 @@
   <depend>rclcpp</depend> <!-- Core ROS2 client library for C++ for Nodes & Topics -->
   <depend>std_msgs</depend> <!-- Provide standard message types (strings, integers, etc) for Topics -->
   <depend>sensor_msgs</depend> <!-- Provides predefined message types for sensor data -->
-  <depend>geometry_msgs</depend>
   <depend>image_transport</depend>
   <depend>cv_bridge</depend>  <!-- ROS2 library to convert ROS image messages to/from OpenCV images --> 
   <depend>OpenCV</depend>
@@ -20,22 +19,15 @@
   <depend>Boost</depend>
   <depend>Eigen3</depend>
   <depend>ament_index_cpp</depend>
-  <depend>yaml-cpp</depend>
-  
+  <depend>geometry_msgs</depend>
+
   <!-- Dependencies for Testing the Package -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <!-- Runtime Dependencies for Executing the Package -->
-  <exec_depend>ament_cmake</exec_depend>        <!-- Required at runtime for running executables built from the package -->
-  <exec_depend>ament_cmake_ros</exec_depend>    <!-- Additional runtime dependencies to build and run ROS2 packages -->
-  <exec_depend>rclpy</exec_depend>
-  <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>python3-opencv</exec_depend>
-  <exec_depend>realsense2_camera</exec_depend>
-  <exec_depend>librealsense2</exec_depend>
-  
-  <build_depend>librealsense2</build_depend>
+  <exec_depend>ament_cmake</exec_depend> <!-- Required at runtime for running executables built from the package -->
+  <exec_depend>ament_cmake_ros</exec_depend> <!-- Additional runtime dependencies to build and run ROS2 packages -->
 
   <!-- Metapackage -->
   <export>

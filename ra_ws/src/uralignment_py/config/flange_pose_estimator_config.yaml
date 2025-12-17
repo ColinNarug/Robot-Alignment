@@ -39,8 +39,6 @@ DETECTION_PARAMS:
 # =========================================================
 # Ellipse extraction parameters --> RANSAC Method
 # =========================================================
-# These parameters are highly dependent on illumination conditions and flange cleanliness, and they are very sensitive to changes. 
-# If pose estimation fails, these parameters are most likely responsible. They must be tuned empirically.
 CONTOUR_PARAMS:
   BILATERAL_DIAMETER: 2      # [pix] Diameter of the bilateral filter kernel
   SIGMA_COLOR: 10            # [pix] Filter sigma in color space
@@ -85,7 +83,6 @@ METHOD_CHOICE: 1
 # =========================================================
 # Pose estimation parameters
 # =========================================================
-# NOTE: TRESHOLD_HOMOGRAPHY_DISTANCE should only be tuned. The others should be kept as they are
 RANSAC_ITERATIVE_PNP_PARAMS:
   # [pix] Max distance between a center of an extracted ellipse,
   #       and the projection of the model center, using the previous pose (R,t) 
@@ -104,6 +101,7 @@ RANSAC_ITERATIVE_PNP_PARAMS:
   TRESHOLD_REFINED_REPROJECTION_ERROR: 5
   #      Max distance between each homographic projection of the imagepoints on the flange, and the
   #      corresponding center of the hole of the flange (that generated that imagepoint)
+  #TRESHOLD_HOMOGRAPHY_DISTANCE: 0.55
   TRESHOLD_HOMOGRAPHY_DISTANCE: 0.001
 
 
@@ -112,7 +110,6 @@ RANSAC_ITERATIVE_PNP_PARAMS:
 # =========================================================
 # Here is described how the flange CAD is done
 # The flange is defined as a series of holes crowns, laying on parallel planes
-# For now, only circular flanges are considered, but the method can be easily extended to non-circular geometries if required.
 FLANGE_PARAMS:
   # [] minimum number of holes still "active" in the pipeline, to continue
   #   (num holes detected --> num holes with contour extracted -->  num holes...)
@@ -138,4 +135,3 @@ FLANGE_PARAMS:
     #   ANGLE_OFFSET: 0.2
      
     # - ...
-

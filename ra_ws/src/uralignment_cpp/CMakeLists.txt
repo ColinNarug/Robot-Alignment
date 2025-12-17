@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ur_alignment)
+project(uralignment_cpp)
 
 # Compiler options for generating warnings if something goes wrong
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -22,11 +22,8 @@ find_package(OpenCV REQUIRED) # OpenCV Library (Not a Dependency defined in pack
 find_package(cv_bridge REQUIRED) # ROS2 library to convert ROS image messages to/from OpenCV images
 find_package(ament_index_cpp REQUIRED)
 find_package(image_transport REQUIRED)
-find_package(realsense2 REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(tf2 REQUIRED) 
-find_package(yaml-cpp REQUIRED)
-
 
 # Additional required directories:
 include_directories(
@@ -78,9 +75,11 @@ add_executable(teleop_key src/teleop_key.cpp)
 target_link_libraries(teleop_key PRIVATE rclcpp::rclcpp ${std_msgs_TARGETS})
 #################################################################
 
+
 install(TARGETS
-  # demo_servo
+  demo_servo
   d435i_camera
+  image_subscriber
   apriltags
   ur_e_series
   displays
@@ -95,37 +94,7 @@ install(DIRECTORY data/
   DESTINATION share/${PROJECT_NAME}/data)
 
 install(DIRECTORY launch/
-  DESTINATION share/${PROJECT_NAME}/launch)
-
-
-############################################################
-install(DIRECTORY data/
-  DESTINATION share/${PROJECT_NAME}/data)
-  install(PROGRAMS
-  scripts/realsense_data_publisher.py
-  scripts/recorded_data_publisher.py
-  
-  scripts/markerless_pose_estimator.py
-  scripts/markerless_pose_averager.py
-  
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-
-
-install(DIRECTORY flange_pose_estimator/
-  DESTINATION share/${PROJECT_NAME}/flange_pose_estimator)
-
-install(DIRECTORY video_flange/
-  DESTINATION share/${PROJECT_NAME}/video_flange)
-
-install(DIRECTORY video_flange_fake/
-  DESTINATION share/${PROJECT_NAME}/video_flange_fake)
-
-install(DIRECTORY video_cavity/
-  DESTINATION share/${PROJECT_NAME}/video_cavity)
-############################################################
-
+  DESTINATION share/${PROJECT_NAME})
 
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
