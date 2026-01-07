@@ -35,10 +35,13 @@ std::atomic<bool> should_quit_(false);
 #include <atomic>
 #include <chrono>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <visp3/core/vpQuaternionVector.h>
 #include <visp3/core/vpRotationMatrix.h>
 #include <visp3/core/vpTranslationVector.h>
 #include <visp3/core/vpHomogeneousMatrix.h>
+
 
 //! [Macro defined]
 #if defined(VISP_HAVE_APRILTAG) && defined(VISP_HAVE_REALSENSE2) && defined(VISP_HAVE_UR_RTDE) && VISP_NAMESPACE_NAME
@@ -59,19 +62,30 @@ public:
     key_qos.reliable().transient_local();  // get latched "last key" immediately
     key_sub_ = this->create_subscription<std_msgs::msg::Char>(
     "/teleop/last_key", key_qos, std::bind(&UniversalRobots_E_Series::key_callback, this, std::placeholders::_1));
+    offset_twist_sub_ = this->create_subscription<geometry_msgs::msg::TwistStamped>(
+    "/offset/cmd_twist_cf",
+    rclcpp::SensorDataQoS(),
+    std::bind(&UniversalRobots_E_Series::offset_twist_callback, this, std::placeholders::_1));
 
     // Publications:
     v_c_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("v_c", 10);
     error_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("error", 10);
     errors_xyz_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("errors_xyz", 10);
+    pbvs_converged_pub_ = this->create_publisher<std_msgs::msg::Bool>("/pbvs/converged", 10);
 
     initialization();
-
   }
+  
 private:
   rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_; // Declare shared pointer to subscription
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr v_c_, error_, errors_xyz_; // Declare shared pointer to publication
   rclcpp::Subscription<std_msgs::msg::Char>::SharedPtr key_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr offset_twist_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pbvs_converged_pub_;
+
+  // Latch latest offset command
+  geometry_msgs::msg::TwistStamped last_offset_twist_;
+  rclcpp::Time last_offset_stamp_;
 
   // Create an instance of vpRobotUniversalRobots Class named 'robot'
   vpRobotUniversalRobots robot;
@@ -79,8 +93,8 @@ private:
   std::string eMc_filename = package_path + "/config/ur_eMc.yaml";
   std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
   std::string robot_ip = "192.168.1.101";
-  double convergence_threshold_t = 0.00001; // Value in [m]
-  double convergence_threshold_tu = 0.001;  // Value in [deg]
+  double convergence_threshold_t = 0.002; // Value in [m]
+  double convergence_threshold_tu = 0.1;  // Value in [deg]
   vpColVector v_c; // This will store velocity commands
   vpColVector errors_xyz;
   vpColVector error;
@@ -90,6 +104,7 @@ private:
   bool has_converged;
   bool servo_started;
   bool first_time;
+  bool offset_twist_valid_;
   vpPoseVector ePc, cdPo;
   vpHomogeneousMatrix cdMc, cdMo, cMo, oMo, eMc, cMo_data_;
   vpServo task;
@@ -123,6 +138,7 @@ private:
     opt_task_sequencing = false;
     final_quit = false;
     has_converged = false;
+    offset_twist_valid_ = false;
     //send_velocities = false;
     servo_started = false;
     first_time = true;
@@ -144,6 +160,15 @@ private:
     RCLCPP_INFO(this->get_logger(), "ur_e_series node started!");
   }
 
+  void offset_twist_callback(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
+  {
+    std::cout << "Top of offset_twist_callback" << std::endl;
+    if (!msg) return;
+    last_offset_twist_ = *msg;
+    last_offset_stamp_ = this->now();
+    offset_twist_valid_ = true;
+    std::cout << "Top of offset_twist_callback" << std::endl;
+  }
 
   void key_callback(const std_msgs::msg::Char::SharedPtr msg)
   {
@@ -176,7 +201,6 @@ private:
     std::cout << "Bottom of Key Callback" << std::endl;
   }
 
-
   void run_servo_loop(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
   {
     /*
@@ -207,7 +231,6 @@ private:
     // Rebuild the old working matrix container
     cMo_data_ = vpHomogeneousMatrix(cMo_t, cMo_R);
     std::cout << "cMo_data_:\n" << cMo_data_ << "\n";
-
 
     // Get camera extrinsics:
     ePc.loadYAML(eMc_filename, ePc);
@@ -315,12 +338,33 @@ private:
       if (error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
       {
         has_converged = true;
+        std_msgs::msg::Bool conv_msg;
+        conv_msg.data = has_converged;
+        pbvs_converged_pub_->publish(conv_msg);
         std::cout << "Servo task has converged" << std::endl;
       }
       if (has_converged)
       {
-        v_c = 0;
-        RCLCPP_INFO(this->get_logger(), "Servo stopped: Target pose reached.");
+        const double max_age_s = 1.0; // 100 ms safety watchdog
+        const double age_s = (this->now() - last_offset_stamp_).seconds();
+        if (offset_twist_valid_ && age_s < max_age_s)
+        {
+          v_c[0] = last_offset_twist_.twist.linear.x;
+          v_c[1] = last_offset_twist_.twist.linear.y;
+          v_c[2] = last_offset_twist_.twist.linear.z;
+          v_c[3] = last_offset_twist_.twist.angular.x;
+          v_c[4] = last_offset_twist_.twist.angular.y;
+          v_c[5] = last_offset_twist_.twist.angular.z;
+        } 
+        else 
+        {
+          RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
+          offset_twist_valid_, age_s, max_age_s
+          );
+          v_c = 0;
+        }
       }
 
       robot.setVelocity(vpRobot::CAMERA_FRAME, v_c); // Send to the robot
@@ -398,7 +442,9 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<UniversalRobots_E_Series>();
-  rclcpp::spin(node);
+  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+  exec.add_node(node);
+  exec.spin();
   rclcpp::shutdown();
   return 0;
 }

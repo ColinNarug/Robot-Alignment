@@ -24,6 +24,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(ur_rtde REQUIRED CONFIG)
 
 # Additional required directories:
 include_directories(
@@ -75,6 +76,17 @@ add_executable(teleop_key src/teleop_key.cpp)
 target_link_libraries(teleop_key PRIVATE rclcpp::rclcpp ${std_msgs_TARGETS})
 #################################################################
 
+# offset ####################################################
+add_executable(offset src/offset.cpp)
+ament_target_dependencies(offset rclcpp std_msgs geometry_msgs)
+#################################################################
+
+# wrench ####################################################
+add_executable(wrench src/wrench.cpp)
+ament_target_dependencies(wrench rclcpp geometry_msgs)
+target_link_libraries(wrench ur_rtde::rtde)
+#################################################################
+
 
 install(TARGETS
   demo_servo
@@ -84,6 +96,8 @@ install(TARGETS
   ur_e_series
   displays
   teleop_key
+  offset
+  wrench
   DESTINATION lib/${PROJECT_NAME})
 
 # Installs the built executables into ROS2 directory
