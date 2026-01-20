@@ -15,9 +15,9 @@ public:
     // Parameters
     f_contact_ = declare_parameter<double>("f_contact", 10.0); // N
     debounce_n_ = declare_parameter<int>("debounce_n", 3);
-    v0_ = declare_parameter<double>("v0", 0.02); // m/s
-    vmin_ = declare_parameter<double>("vmin", 0.01); // m/s
-    tau_ = declare_parameter<double>("tau", 2.0); // s
+    v0_ = declare_parameter<double>("v0", 0.025); // m/s
+    vmin_ = declare_parameter<double>("vmin", 0.005); // m/s
+    tau_ = declare_parameter<double>("tau", 4.0); // s
     timeout_s_ = declare_parameter<double>("approach_timeout_s", 30.0);
 
     sub_conv_ = create_subscription<std_msgs::msg::Bool>(
@@ -147,7 +147,7 @@ private:
         const double v = std::max(vmin_, v0_ * std::exp(-t / tau_));
         geometry_msgs::msg::TwistStamped cmd;
         cmd.header.stamp = now_t;
-        cmd.header.frame_id = "camera_frame";
+        cmd.header.frame_id = "tooling_frame";
         cmd.twist.linear.z = v;
         pub_twist_->publish(cmd);
         return;
@@ -166,7 +166,7 @@ private:
   {
     geometry_msgs::msg::TwistStamped cmd;
     cmd.header.stamp = stamp;
-    cmd.header.frame_id = "camera_frame";
+    cmd.header.frame_id = "tooling_frame";
     pub_twist_->publish(cmd);
   }
   void fault(const std::string& why) 

@@ -366,8 +366,14 @@ private:
           v_c = 0;
         }
       }
-
-      robot.setVelocity(vpRobot::CAMERA_FRAME, v_c); // Send to the robot
+      if (has_converged)
+      {
+        robot.setVelocity(vpRobot::END_EFFECTOR_FRAME, v_c); // Send to the robot
+      }
+      else
+      {
+        robot.setVelocity(vpRobot::CAMERA_FRAME, v_c); // Send to the robot
+      }
       std::cout << "v_c: " << v_c.t() << std::endl;
 
       std_msgs::msg::Float64MultiArray vel;
