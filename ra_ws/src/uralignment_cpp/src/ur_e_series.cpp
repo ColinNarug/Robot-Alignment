@@ -105,6 +105,7 @@ private:
   bool servo_started;
   bool first_time;
   bool offset_twist_valid_;
+  bool features_added;
   vpPoseVector ePc, cdPo;
   vpHomogeneousMatrix cdMc, cdMo, cMo, oMo, eMc, cMo_data_;
   vpServo task;
@@ -139,6 +140,7 @@ private:
     final_quit = false;
     has_converged = false;
     offset_twist_valid_ = false;
+    features_added = false;
     //send_velocities = false;
     servo_started = false;
     first_time = true;
@@ -203,45 +205,21 @@ private:
 
   void run_servo_loop(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
   {
-    /*
-    std::cout << "Top of run_servo_loop" << std::endl;
-    for (int i = 0; i < 4; ++i) 
-    {
-      for (int j = 0; j < 4; ++j) 
-      {
-        cMo_data_[i][j] = msg->data[i * 4 + j];
-      }
-    }
-    std::cout << "cMo:\n" << cMo_data_ << std::endl;
-    */
-
-    // --- Convert TransformStamped -> ViSP homogeneous matrix (cMo) ---
     const auto& T = msg->transform;
-
-    // Translation
     vpTranslationVector cMo_t(T.translation.x, T.translation.y, T.translation.z);
-    std::cout << "cMo_t:\n" << cMo_t << "\n";
-    // Rotation: geometry_msgs quaternion -> ViSP quaternion -> rotation matrix
     vpQuaternionVector cMo_q(T.rotation.x, T.rotation.y, T.rotation.z, T.rotation.w);
-    std::cout << "cMo_q:\n" << cMo_q << "\n";
     vpRotationMatrix cMo_R;
     cMo_R.buildFrom(cMo_q);
-    std::cout << "cMo_R:\n" << cMo_R << "\n";
-
-    // Rebuild the old working matrix container
     cMo_data_ = vpHomogeneousMatrix(cMo_t, cMo_R);
-    std::cout << "cMo_data_:\n" << cMo_data_ << "\n";
 
     // Get camera extrinsics:
     ePc.loadYAML(eMc_filename, ePc);
     vpHomogeneousMatrix eMc(ePc);
     std::cout << "Read extrinsic parameters from file. eMc:\n" << eMc << "\n";
-
     // Build Desired Object relative to Camera Frame:
     cdPo.loadYAML(cdMo_filename, cdPo);
     vpHomogeneousMatrix cdMo(cdPo);
     std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
-
     robot.set_eMc(eMc); // Set location of the camera wrt end-effector frame
     robot.setRobotState(vpRobot::STATE_VELOCITY_CONTROL);
 
@@ -276,9 +254,8 @@ private:
     try
     {
       static double t_init_servo = vpTime::measureTimeMs(); // TODO benchmarking time as in detection
-      char k = last_key_.load(std::memory_order_relaxed);
-      std::cout << "Last Key: " << last_key_ << std::endl;
-
+      const char k = last_key_.load(std::memory_order_relaxed);
+      std::cout << "Last Key: " << k << std::endl;
       std::cout << "cdMo:\n" << cdMo << std::endl;
       cdMc = cdMo * oMo * cMo_data_.inverse();
       std::cout << "cdMc:\n" << cdMc << std::endl;
@@ -286,66 +263,72 @@ private:
       tu = vpFeatureThetaU(vpFeatureThetaU::cdRc);
       t.buildFrom(cdMc);
       tu.buildFrom(cdMc);
- 
       vpTranslationVector cd_t_c = cdMc.getTranslationVector();
       vpThetaUVector cd_tu_c = cdMc.getThetaUVector();
-      std::cout << "cd_t_c: \n" << cd_tu_c << std::endl;
+      std::cout << "cd_t_c: \n" << cd_t_c << std::endl;
       std::cout << "cd_tu_c: \n" << cd_tu_c << std::endl;
+      error_tr = sqrt(cd_t_c.sumSquare());
+      error_tu = vpMath::deg(sqrt(cd_tu_c.sumSquare()));
+      if (!has_converged && error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
+      {
+        const double max_age_s = 1.0; // 100ms safety watchdog
+        const double age_s = (this->now() - last_offset_stamp_).seconds();
+        has_converged = true;
+        std_msgs::msg::Bool conv_msg;
+        conv_msg.data = true;
+        pbvs_converged_pub_->publish(conv_msg);
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
+          offset_twist_valid_, age_s, max_age_s);
+      }
       td = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tud = vpFeatureThetaU(vpFeatureThetaU::cdRc);
+      if (!features_added)
+      {
       task.addFeature(t, td);
       task.addFeature(tu, tud);
+      features_added = true;
+      }
 
-      if (is_quit_key(k)) // Stop Robot & Quit Node
+      if (is_quit_key(k))
       {
         v_c = 0;
-        try {robot.setVelocity(vpRobot::CAMERA_FRAME, v_c);} 
-        catch (...) {} // swallow errors to guarantee shutdown path
+        try 
+        {
+          robot.setVelocity(has_converged ? vpRobot::END_EFFECTOR_FRAME : vpRobot::CAMERA_FRAME, v_c);
+        } 
+        catch (...) {}
         RCLCPP_WARN(this->get_logger(), "Quit key received. Stopping robot then shutting down...");
         rclcpp::sleep_for(std::chrono::seconds(1));
         rclcpp::shutdown();
-        return; // leave the callback
+        return;
       }
 
-      if (should_send_velocities(k)) // Start/Stop Robot
+      const bool enabled = should_send_velocities(k);
+
+      if (!enabled)
       {
-        if (opt_task_sequencing) 
+        v_c = 0;
+      }
+      else if (!has_converged)
+      {
+        if (opt_task_sequencing)
         {
-          if (!servo_started) 
+          if (!servo_started)
           {
             servo_started = true;
             t_init_servo = vpTime::measureTimeMs();
           }
           v_c = task.computeControlLaw((vpTime::measureTimeMs() - t_init_servo) / 1000.0);
         }
-        else 
+        else
         {
           v_c = task.computeControlLaw();
         }
-      } 
-      else 
-      {
-        v_c = 0;
       }
-
-      //errors_xyz = task.getError();
-      std::cout << "errors_xyz: \n" << errors_xyz << std::endl;
-      error_tr = sqrt(cd_t_c.sumSquare());
-      error_tu = vpMath::deg(sqrt(cd_tu_c.sumSquare()));
-      std::cout << "error_tr: \n" << error_tr << std::endl;
-      std::cout << "error_tu: \n" << error_tu << std::endl;
-
-      if (error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
+      else
       {
-        has_converged = true;
-        std_msgs::msg::Bool conv_msg;
-        conv_msg.data = has_converged;
-        pbvs_converged_pub_->publish(conv_msg);
-        std::cout << "Servo task has converged" << std::endl;
-      }
-      if (has_converged)
-      {
-        const double max_age_s = 1.0; // 100 ms safety watchdog
+        const double max_age_s = 0.1;  // 100 ms watchdog
         const double age_s = (this->now() - last_offset_stamp_).seconds();
         if (offset_twist_valid_ && age_s < max_age_s)
         {
@@ -355,25 +338,16 @@ private:
           v_c[3] = last_offset_twist_.twist.angular.x;
           v_c[4] = last_offset_twist_.twist.angular.y;
           v_c[5] = last_offset_twist_.twist.angular.z;
-        } 
-        else 
+        }
+        else
         {
-          RCLCPP_WARN_THROTTLE(
-          this->get_logger(), *this->get_clock(), 2000,
-          "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
-          offset_twist_valid_, age_s, max_age_s
-          );
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+            "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
+            offset_twist_valid_, age_s, max_age_s);
           v_c = 0;
         }
       }
-      if (has_converged)
-      {
-        robot.setVelocity(vpRobot::END_EFFECTOR_FRAME, v_c); // Send to the robot
-      }
-      else
-      {
-        robot.setVelocity(vpRobot::CAMERA_FRAME, v_c); // Send to the robot
-      }
+      robot.setVelocity(has_converged ? vpRobot::END_EFFECTOR_FRAME : vpRobot::CAMERA_FRAME, v_c);
       std::cout << "v_c: " << v_c.t() << std::endl;
 
       std_msgs::msg::Float64MultiArray vel;
