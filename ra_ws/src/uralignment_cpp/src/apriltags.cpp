@@ -43,7 +43,10 @@ public:
   AprilTagNode() : Node("apriltag_node")
   {
     RCLCPP_INFO(this->get_logger(), "AprilTagNode initialized.");
-
+    // Parameters
+    width_ = declare_parameter<int>("width",1920);
+    height_ = declare_parameter<int>("height",1080);
+    fps_ = declare_parameter<int>("fps",30);  
     // Subscribe to Camera node's topic.
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     "/camera/color/image_raw", rclcpp::SensorDataQoS(),
@@ -77,6 +80,10 @@ private:
   //! [Create AprilTag detector]
   std::map<int, int> tags_index;
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
+  // Params
+  int width_{1920};
+  int height_{1080};
+  int fps_{30};
 
   void initialization()
   {
@@ -112,8 +119,8 @@ private:
   void apriltag_loop(const sensor_msgs::msg::Image::SharedPtr msg)
   {
     // Define ViSP image buffers matching RealSense camera resolution:
-    vpImage<vpRGBa> I_color(540, 960); // Color
-    vpImage<unsigned char> I(540, 960); // Grayscale
+    vpImage<vpRGBa> I_color(height_, width_); // Color
+    vpImage<unsigned char> I(height_, width_); // Grayscale
 
     std::vector<vpColVector> trackedHoles(4);
     std::vector<bool> detectedMask(4, false);

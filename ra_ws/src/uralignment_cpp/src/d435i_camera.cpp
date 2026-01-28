@@ -1,78 +1,120 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <cv_bridge/cv_bridge.hpp>
-#include <image_transport/image_transport.hpp>
 #include <librealsense2/rs.hpp>
-#include <opencv2/opencv.hpp>
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <string>
+#include <thread>
+
 
 // Define the camera node class:
 class D435iCameraNode : public rclcpp::Node
 {
 public:
   // Constructor
-  D435iCameraNode()
-  : Node("d435i_camera_node") // Name the ROS2 node
+  explicit D435iCameraNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
+  : Node("d435i_camera_node", options)
   {
-    // Configure the RealSense pipeline:
-    rs2::config cfg;
-    cfg.enable_stream(RS2_STREAM_COLOR, 960, 540, RS2_FORMAT_BGR8, 30); // Enable BGR stream
+    // Parameters
+    width_ = this->declare_parameter<int>("width",1920);
+    height_ = this->declare_parameter<int>("height",1080);
+    fps_ = this->declare_parameter<int>("fps",30);
+    frame_id_ = this->declare_parameter<std::string>("frame_id", "camera_link");
+    qos_depth_ = this->declare_parameter<int>("qos_depth", 10);
+    qos_reliability_ = this-> declare_parameter<std::string>("qos_reliability", "reliable"); // "reliable" or "best_effort"
+    rclcpp::QoS qos{rclcpp::KeepLast(static_cast<size_t>(qos_depth_))};
+    qos.durability_volatile();
+    if(qos_reliability_ == "best_effort")
+    {
+      qos.best_effort();
+    }
+    else
+    {
+      qos.reliable();
+    }
+    pub_ = this->create_publisher<sensor_msgs::msg::Image>("camera/color/image_raw", qos);
+    rs2::config cfg; // Configure the RealSense pipeline:
+    cfg.enable_stream(RS2_STREAM_COLOR, width_, height_, RS2_FORMAT_BGR8, fps_); // Enable BGR stream
     pipe_.start(cfg); // Start the RealSense pipeline
-    
+    RCLCPP_INFO(this->get_logger(), "D435i Camera Node Started. Resolution: %dx%d @ %d FPS. QoS: %s. Depth: %d.",
+      width_, height_, fps_, qos_reliability_.c_str(), qos_depth_);
   }
 
-  void post_init()
+  void start()
   {
-    // Create an ImageTransport object scoped to this constructor only:
-    image_transport::ImageTransport it(shared_from_this());
-    pub_ = it.advertise("camera/color/image_raw", 10); // Advertise image topic
-
-    // Create a timer to call timer_callback() every ~33ms (~30 FPS):
-    timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(33),
-      std::bind(&D435iCameraNode::timer_callback, this)
-    );
+    running_.store(true);
+    capture_thread_ = std::thread(&D435iCameraNode::capture, this);
   }
-
-private:
-  // Callback to capture and publish camera frames:
-  void timer_callback()
+  void stop()
   {
-    // Wait for the next set of frames
-    rs2::frameset frames = pipe_.wait_for_frames();
-    rs2::video_frame color_frame = frames.get_color_frame(); // Get color frame
-
-    if (!color_frame) return; // Skip if no frame available
-
-    // Convert RealSense frame to OpenCV matrix:
-    cv::Mat color(
-      cv::Size(960, 540), // Match resolution
-      CV_8UC3, // 8-bit 3-channel image
-      (void*)color_frame.get_data(), // Image data pointer
-      cv::Mat::AUTO_STEP   // Auto-stride
-    );
-
-    // Create ROS2 message header:
-    std_msgs::msg::Header header;
-    header.stamp = this->now(); // Timestamp
-    header.frame_id = "camera_link"; // Frame ID
-
-    // Convert OpenCV image to ROS2 Image message:
-    auto msg = cv_bridge::CvImage(header, "bgr8", color).toImageMsg();
-
-    pub_.publish(msg); // Publish the message
+    bool expected = true;
+    if(!running_.compare_exchange_strong(expected, false)) {return;}
+    try
+    {
+      pipe_.stop();
+    }catch(...){}
+    if (capture_thread_.joinable()) {capture_thread_.join();}
   }
+  ~D435iCameraNode() override {stop();}
 
-  rs2::pipeline pipe_; // RealSense pipeline object
-  image_transport::Publisher pub_; // Publisher for image topic
-  rclcpp::TimerBase::SharedPtr timer_; // Timer for publishing frames
+  private:
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_;
+  rs2::pipeline pipe_;
+  std::atomic<bool> running_{false};
+  std::thread capture_thread_;
+  // Params:
+  int width_{1920};
+  int height_{1080};
+  int fps_{30};
+  std::string frame_id_{"camera_link"};
+  int qos_depth_{10};
+  std::string qos_reliability_{"reliable"};
+  std::string encoding_{"bgr8"};
+
+  void capture() // Callback to capture and publish camera frames:
+  {
+    sensor_msgs::msg::Image msg;
+    msg.header.frame_id = frame_id_;
+    msg.is_bigendian = false;
+
+    while(rclcpp::ok() && running_.load())
+    {
+      try
+      {
+        rs2::frameset frames = pipe_.wait_for_frames();
+        rs2::video_frame color_frame = frames.get_color_frame();
+        if(!color_frame) {continue;}
+        const int w = color_frame.get_width();
+        const int h = color_frame.get_height();
+        const int stride = color_frame.get_stride_in_bytes();
+        const size_t frame_bytes = static_cast<size_t>(h) * static_cast<size_t>(stride);
+        msg.header.stamp = this->now();
+        msg.width = static_cast<uint32_t>(w);
+        msg.height = static_cast<uint32_t>(h);
+        msg.encoding = encoding_;
+        msg.step = static_cast<sensor_msgs::msg::Image::_step_type>(stride);
+        if(msg.data.size() != frame_bytes)
+        {
+          msg.data.resize(frame_bytes);
+        }
+        std::memcpy(msg.data.data(), color_frame.get_data(), frame_bytes);
+        pub_->publish(msg);
+      }
+      catch(const rs2::error&) {if(!running_.load()) break;}
+      catch(...) {if(!running_.load()) break;}
+    }
+  };
 };
 
 // Main function to start the node:
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv); // Initialize ROS2
-  auto node = std::make_shared<D435iCameraNode>();
-  node->post_init();
+  rclcpp::NodeOptions options;
+  options.use_intra_process_comms(true);
+  auto node = std::make_shared<D435iCameraNode>(options);
+  node->start();
   rclcpp::spin(node); // Run the node
   rclcpp::shutdown(); // Cleanup after node is shut down
   return 0;

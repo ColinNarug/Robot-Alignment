@@ -58,6 +58,10 @@ public:
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     "camera/color/image_raw", rclcpp::SensorDataQoS(),
     std::bind(&DisplayNode::image_callback, this, std::placeholders::_1));
+    // Parameters
+    width_ = declare_parameter<int>("width",1920);
+    height_ = declare_parameter<int>("height",1080);
+    fps_ = declare_parameter<int>("fps",30);  
 
     initialization();
     std::cout << "End of Constructor" << std::endl;
@@ -98,14 +102,19 @@ private:
   std::unique_ptr<vpDisplay> disp_;
   bool display_initialized_ = false;
 
+  // Params
+  int width_{1920};
+  int height_{1080};
+  int fps_{30};
+
   void initialization()
   {
     std::cout << "Top of Initialization" << std::endl;
     iter_plot = 0;
     std::cout << "Point1 of Initialization" << std::endl;
-    I_color.resize(540, 960);
+    I_color.resize(height_, width_);
     std::cout << "Point2 of Initialization" << std::endl;
-    I.resize(540, 960);
+    I.resize(height_, width_);
     std::cout << "Point3 of Initialization" << std::endl;
     plotter = new vpPlot(2, static_cast<int>(250 * 2), 500, static_cast<int>(I.getWidth()) + 80, 10, "Real time curves plotter");
     std::cout << "Point4 of Initialization" << std::endl;
