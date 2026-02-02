@@ -46,10 +46,20 @@ public:
     // Parameters
     width_ = declare_parameter<int>("width",1920);
     height_ = declare_parameter<int>("height",1080);
-    fps_ = declare_parameter<int>("fps",30);  
+    fps_ = declare_parameter<int>("fps",30);
+    // QoS controls 
+    qos_depth_ = this->declare_parameter<int>("qos_depth", 5);
+    qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "best_effort" or "reliable"
+    // Encoding
+    preferred_encoding_ = this->declare_parameter<std::string>("preferred_encoding", "bgr8");  // "bgr8" or "rgb8"
+    // QoS
+    rclcpp::QoS qos{rclcpp::KeepLast(static_cast<size_t>(qos_depth_))};
+    qos.durability_volatile();
+    if (qos_reliability_ == "reliable") qos.reliable();
+    else qos.best_effort();
     // Subscribe to Camera node's topic.
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-    "/camera/color/image_raw", rclcpp::SensorDataQoS(),
+    "/camera/color/image_raw", qos,
     std::bind(&AprilTagNode::apriltag_loop, this, std::placeholders::_1));
 
     // Publish cMo:
@@ -62,6 +72,14 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_; // Declare shared pointer to subscription
   rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_; // Declare shared pointer to publication
 
+  // Params
+  int width_{1920};
+  int height_{1080};
+  int fps_{30};
+  int qos_depth_{5};
+  std::string qos_reliability_{"best_effort"};
+  std::string preferred_encoding_{"bgr8"};
+  
   double tagSize = 0.0221;
   float quad_decimate = 1.0;
   int nThreads = 1;
@@ -80,10 +98,6 @@ private:
   //! [Create AprilTag detector]
   std::map<int, int> tags_index;
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
-  // Params
-  int width_{1920};
-  int height_{1080};
-  int fps_{30};
 
   void initialization()
   {
@@ -193,7 +207,7 @@ private:
         }
         // Passes the filtered vectors to findPose:
         vpHomogeneousMatrix cMo = findPose(filteredModelHoles, filteredTrackedHoles);
-        cMo = findPose(filteredModelHoles, filteredTrackedHoles); // TODO write algorithm directly for column vectors
+        //cMo = findPose(filteredModelHoles, filteredTrackedHoles); // TODO write algorithm directly for column vectors
         if (cMo == vpHomogeneousMatrix())
         {
           std::cerr << "WARNING: cMo is identity. Pose estimation failed or returned invalid transform." << std::endl;
@@ -207,17 +221,18 @@ private:
         }
 
         // To save current cMo in .yaml:
+        /*
         vpPoseVector cPo(cMo);
         std::stringstream ss_cPo;
         //std::cout << "cPo: " << cPo.t() << std::endl;
         ss_cPo << package_path + "/data/ur_pose_cPo.yaml";
         cPo.saveYAML(ss_cPo.str(), cPo); // Save target pose in camera frame
-
+        */
 
         cMo.extract(t);
-        std::cout << "t:\n" << t << "\n";
+        //std::cout << "t:\n" << t << "\n";
         cMo.extract(R);
-        std::cout << "R:\n" << R << "\n";
+        //std::cout << "R:\n" << R << "\n";
         tf2::Matrix3x3 m
           (
           R[0][0], R[0][1], R[0][2],
@@ -228,7 +243,7 @@ private:
         // Convert rotation matrix to quaternion
         tf2::Quaternion q;
         m.getRotation(q);
-        std::cout << "q:\n" << q << "\n";
+        //std::cout << "q:\n" << q << "\n";
 
         // Build TransformStamped
         geometry_msgs::msg::TransformStamped tf_msg;
@@ -245,7 +260,7 @@ private:
 
         // Publish
         cMo_->publish(tf_msg);
-        std::cout << "cMo_(Quaternion):\n" << cMo_ << "\n";
+        //std::cout << "cMo_(Quaternion):\n" << cMo_ << "\n";
       }
     }
     catch (cv_bridge::Exception &e)
