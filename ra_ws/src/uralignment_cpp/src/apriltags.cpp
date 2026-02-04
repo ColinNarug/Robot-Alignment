@@ -42,6 +42,13 @@ class AprilTagNode : public rclcpp::Node
 public:
   AprilTagNode() : Node("apriltag_node")
   {
+
+    image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    apriltag_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions cam_opts;
+    cam_opts.callback_group = image_handling_;
+
+
     RCLCPP_INFO(this->get_logger(), "AprilTagNode initialized.");
     // Parameters
     width_ = declare_parameter<int>("width",1920);
@@ -60,15 +67,17 @@ public:
     // Subscribe to Camera node's topic.
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     "/camera/color/image_raw", qos,
-    std::bind(&AprilTagNode::apriltag_loop, this, std::placeholders::_1));
-
+    std::bind(&AprilTagNode::image_loop, this, std::placeholders::_1), cam_opts);
     // Publish cMo:
     cMo_ = this->create_publisher<geometry_msgs::msg::TransformStamped>("cMo", 10);
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(5), std::bind(&AprilTagNode::apriltag_loop, this), apriltag_handling_);
     
     initialization();
   }
 
 private:
+  rclcpp::CallbackGroup::SharedPtr image_handling_, apriltag_handling_;
+  rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_; // Declare shared pointer to subscription
   rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_; // Declare shared pointer to publication
 
@@ -99,8 +108,37 @@ private:
   std::map<int, int> tags_index;
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
 
+  // Define ViSP image buffers matching RealSense camera resolution:
+  vpImage<vpRGBa> I_color;
+  vpImage<unsigned char> I;
+
+  std::vector<vpColVector> trackedHoles;
+  std::vector<bool> detectedMask;
+  std::vector<vpColVector> filteredModelHoles, filteredTrackedHoles;
+  // Model definition:
+  std::vector<vpColVector> modelHoles;
+
+  std::vector<vpHomogeneousMatrix> cMo_vec;
+  vpHomogeneousMatrix cMo;
+
+
   void initialization()
   {
+    I_color.resize(height_, width_); // Color
+    I.resize(height_, width_); // Grayscale
+
+    trackedHoles.resize(4);
+    detectedMask.resize(4, false);
+    
+    modelHoles.resize(4);
+    for (int i = 0; i < modelHoles.size(); ++i)
+    {
+      modelHoles[i].resize(3); // to avoid segmentation fault
+    }
+    modelHoles[0] = {0.06512, 0.0, 0.0}; // TODO parametrize this
+    modelHoles[1] = {0.0, 0.06512, 0.0};
+    modelHoles[2] = {-0.06512, 0.0, 0.0};
+    modelHoles[3] = {0.0, -0.06512, 0.0};
     // Camera Intrinsics:
     cam.initPersProjWithoutDistortion(  //diplays
       907.7258031, // px - Focal Length
@@ -130,27 +168,8 @@ private:
     std::cout << "Z aligned: " << align_frame << std::endl;
   }
 
-  void apriltag_loop(const sensor_msgs::msg::Image::SharedPtr msg)
+  void image_loop(const sensor_msgs::msg::Image::SharedPtr msg)
   {
-    // Define ViSP image buffers matching RealSense camera resolution:
-    vpImage<vpRGBa> I_color(height_, width_); // Color
-    vpImage<unsigned char> I(height_, width_); // Grayscale
-
-    std::vector<vpColVector> trackedHoles(4);
-    std::vector<bool> detectedMask(4, false);
-    std::vector<vpColVector> filteredModelHoles, filteredTrackedHoles;
-
-    // Model definition:
-    std::vector<vpColVector> modelHoles(4);
-    for (int i = 0; i < modelHoles.size(); ++i)
-    {
-      modelHoles[i].resize(3); // to avoid segmentation fault
-    }
-    modelHoles[0] = {0.06512, 0.0, 0.0}; // TODO parametrize this
-    modelHoles[1] = {0.0, 0.06512, 0.0};
-    modelHoles[2] = {-0.06512, 0.0, 0.0};
-    modelHoles[3] = {0.0, -0.06512, 0.0};
-
     try
     {
       // Convert ROS2 image message to OpenCV-compatible cv::Mat:
@@ -173,13 +192,22 @@ private:
           I_color[i][j] = vpRGBa(pixel[2], pixel[1], pixel[0]); // BGR to RGBa
         }
       }
+    }
+    catch (cv_bridge::Exception &e)
+    {
+      RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+    }
+  }
 
+  void apriltag_loop()
+  {
+    try
+    {
       // Display RGBa & then Convert it to unsigned char vpImage, I, for AprilTag detection
       vpDisplay::display(I_color);
       vpImageConvert::convert(I_color, I);
 
       // Tag Detection:
-      std::vector<vpHomogeneousMatrix> cMo_vec;
       detector.detect(I, tagSize, cam, cMo_vec);
       std::vector<int> tags_id = detector.getTagsId();
 
@@ -206,7 +234,7 @@ private:
           filteredTrackedHoles.push_back(trackedHoles[modelIndex]);
         }
         // Passes the filtered vectors to findPose:
-        vpHomogeneousMatrix cMo = findPose(filteredModelHoles, filteredTrackedHoles);
+        cMo = findPose(filteredModelHoles, filteredTrackedHoles);
         //cMo = findPose(filteredModelHoles, filteredTrackedHoles); // TODO write algorithm directly for column vectors
         if (cMo == vpHomogeneousMatrix())
         {
@@ -362,7 +390,9 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<AprilTagNode>();
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+    exec.add_node(node);
+    exec.spin();
     rclcpp::shutdown();
     return 0;
 }
