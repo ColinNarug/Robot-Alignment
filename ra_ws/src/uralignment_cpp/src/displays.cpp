@@ -46,39 +46,75 @@ class DisplayNode : public rclcpp::Node
 public:
   DisplayNode() : Node("displays_node")
   {
-    std::cout << "Top of Constructor" << std::endl;
-    cMo_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
-    "cMo", 10, std::bind(&DisplayNode::cMo_callback, this, std::placeholders::_1));
-    v_c_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
-    "v_c", 10, std::bind(&DisplayNode::v_c_callback, this, std::placeholders::_1));
-    errors_xyz_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
-    "errors_xyz", 10, std::bind(&DisplayNode::errors_xyz_callback, this, std::placeholders::_1));
-    error_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
-    "error", 10, std::bind(&DisplayNode::error_callback, this, std::placeholders::_1));
-    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-    "camera/color/image_raw", rclcpp::SensorDataQoS(),
-    std::bind(&DisplayNode::image_callback, this, std::placeholders::_1));
+
+    image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions cam_opts;
+    cam_opts.callback_group = image_handling_;
+    vector_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    rclcpp::SubscriptionOptions vector_opts;
+    cam_opts.callback_group = vector_handling_;
+
     // Parameters
     width_ = declare_parameter<int>("width",1920);
     height_ = declare_parameter<int>("height",1080);
-    fps_ = declare_parameter<int>("fps",30);  
+    fps_ = declare_parameter<int>("fps",30);
+    // QoS controls 
+    qos_depth_ = this->declare_parameter<int>("qos_depth", 5);
+    qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "best_effort" or "reliable"
+    // Encoding
+    preferred_encoding_ = this->declare_parameter<std::string>("preferred_encoding", "bgr8");  // "bgr8" or "rgb8"
+    // QoS
+    rclcpp::QoS qos{rclcpp::KeepLast(static_cast<size_t>(qos_depth_))};
+    qos.durability_volatile();
+    if (qos_reliability_ == "reliable") qos.reliable();
+    else qos.best_effort();
+    // Subscribe to Camera node's topic
+    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+    "/camera/color/image_raw", qos,
+    std::bind(&DisplayNode::image_callback, this, std::placeholders::_1), cam_opts);
+
+    cMo_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
+    "cMo", 10, std::bind(&DisplayNode::cMo_callback, this, std::placeholders::_1), vector_opts);
+
+    v_c_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "v_c", 10, std::bind(&DisplayNode::v_c_callback, this, std::placeholders::_1), vector_opts);
+
+    errors_xyz_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "errors_xyz", 10, std::bind(&DisplayNode::errors_xyz_callback, this, std::placeholders::_1), vector_opts);
+
+    error_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "error", 10, std::bind(&DisplayNode::error_callback, this, std::placeholders::_1), vector_opts);
 
     initialization();
-    std::cout << "End of Constructor" << std::endl;
   }
 
 private:
-  // Declare shared pointers to subscription:
+  rclcpp::CallbackGroup::SharedPtr image_handling_, vector_handling_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr v_c_, errors_xyz_, error_;  
   rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
 
-  vpColVector v_c_data_;     // size 6
-  vpColVector error_data_;   // size 2
-  vpColVector errors_xyz_data_; // size 6
-  vpHomogeneousMatrix cMo_data_; // 4x4 matrix
+  // Params
+  int width_{1920};
+  int height_{1080};
+  int fps_{30};
+  int qos_depth_{5};
+  std::string qos_reliability_{"best_effort"};
+  std::string preferred_encoding_{"bgr8"};
+
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
   std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
+  bool opt_plot;
+  bool display_initialized_;
+  bool cMo_valid;
+  vpColVector v_c_data_, error_data_, errors_xyz_data_;
+  vpPoseVector cdPo;
+  vpHomogeneousMatrix cdMo, cdMc, oMo, cMo_data_;
+  vpFeatureTranslation t, td;
+  vpFeatureThetaU tu, tud; 
+  vpTranslationVector cMo_t, cd_t_c;
+  vpQuaternionVector cMo_q;
+  vpRotationMatrix cMo_R;
   cv::Mat latest_image_; // Hold latest image
   // Define ViSP image buffers matching RealSense camera resolution:
   vpImage<vpRGBa> I_color;
@@ -86,49 +122,32 @@ private:
   vpPlot *plotter = nullptr;
   int iter_plot;
   vpCameraParameters cam;
-  vpPoseVector cdPo;
-  vpHomogeneousMatrix cdMo, cdMc, oMo;
   vpServo task;
   std::stringstream ss;
   std::vector<vpImagePoint> *traj_vip = nullptr; // To memorize point trajectory
-
-  vpFeatureTranslation t;
-  vpFeatureThetaU tu;  
-  vpFeatureTranslation td;
-  vpFeatureThetaU tud;
-  bool opt_plot;
   double t_start;
-
   std::unique_ptr<vpDisplay> disp_;
-  bool display_initialized_ = false;
-
-  // Params
-  int width_{1920};
-  int height_{1080};
-  int fps_{30};
 
   void initialization()
   {
-    std::cout << "Top of Initialization" << std::endl;
-    iter_plot = 0;
-    std::cout << "Point1 of Initialization" << std::endl;
-    I_color.resize(height_, width_);
-    std::cout << "Point2 of Initialization" << std::endl;
-    I.resize(height_, width_);
-    std::cout << "Point3 of Initialization" << std::endl;
-    plotter = new vpPlot(2, static_cast<int>(250 * 2), 500, static_cast<int>(I.getWidth()) + 80, 10, "Real time curves plotter");
-    std::cout << "Point4 of Initialization" << std::endl;
-
-    opt_plot = true;
-    t_start = vpTime::measureTimeMs();
-
     // Camera Intrinsics:
     cam.initPersProjWithoutDistortion(
       907.7258031,  // px - Focal Length
       906.8582153,  // py - Focal Length
       657.2998502,  // u0 - Princicple Point
       358.9750977); // v0 - Principle Point
-    std::cout << cam << std::endl;
+
+    // Build Desired Object relative to Camera Frame:
+    cdPo.loadYAML(cdMo_filename, cdPo);
+    cdMo.buildFrom(cdPo);
+    std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
+
+    iter_plot = 0;
+    I_color.resize(height_, width_);
+    I.resize(height_, width_);
+    plotter = new vpPlot(2, static_cast<int>(250 * 2), 500, static_cast<int>(I.getWidth()) + 80, 10, "Real time curves plotter");
+    opt_plot = true;
+    t_start = vpTime::measureTimeMs();
 
     if(opt_plot)
     {
@@ -153,44 +172,35 @@ private:
     task.setServo(vpServo::EYEINHAND_CAMERA);
     task.setInteractionMatrixType(vpServo::CURRENT);
 
-    std::cout << "End of Initialization" << std::endl;
-  }
+    cMo_valid = false;
+    display_initialized_ = false;
 
-  void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg)
-  {
-    std::cout << "Top of cMo_callback" << std::endl;
-    /*
-    if (!msg || msg->data.size() != 16)
-      return;
-
-    for (int i = 0; i < 4; ++i)
-    {
-      for (int j = 0; j < 4; ++j)
-      {
-        cMo_data_[i][j] = msg->data[i * 4 + j];
-      }
-    }
-    */
-      // --- Convert TransformStamped -> ViSP homogeneous matrix (cMo) ---
-    const auto& T = msg->transform;
-
-    // Translation
-    vpTranslationVector cMo_t(T.translation.x, T.translation.y, T.translation.z);
-
-    // Rotation: geometry_msgs quaternion -> ViSP quaternion -> rotation matrix
-    vpQuaternionVector cMo_q(T.rotation.x, T.rotation.y, T.rotation.z, T.rotation.w);
-    vpRotationMatrix cMo_R;
+    cMo_t = vpTranslationVector(0.0, 0.0, 0.0);
+    cMo_q = vpQuaternionVector(0.0, 0.0, 0.0, 1.0);
     cMo_R.buildFrom(cMo_q);
+    cMo_data_.buildFrom(cMo_t, cMo_R);
 
-    // Rebuild the old working matrix container
-    cMo_data_ = vpHomogeneousMatrix(cMo_t, cMo_R);
-
-    std::cout << "cMo:\n" << cMo_data_ << std::endl;
-    std::cout << "End of cMo_callback" << std::endl;
+    std::cout << "Displays Node Started!" << std::endl;
   }
+
+  void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
+  {
+    if(!msg) return;
+    const auto& T = msg->transform;
+    cMo_t[0] = T.translation.x;
+    cMo_t[1] = T.translation.y;
+    cMo_t[2] = T.translation.z;
+    cMo_q[0] = T.rotation.x;
+    cMo_q[1] = T.rotation.y;
+    cMo_q[2] = T.rotation.z;
+    cMo_q[3] = T.rotation.w;
+    cMo_R.buildFrom(cMo_q);
+    cMo_data_.buildFrom(cMo_t, cMo_R);
+    cMo_valid = true;
+  }
+
   void v_c_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
-    std::cout << "Top of v_c_callback" << std::endl;
     if (!msg || msg->data.size() != 6)
       return;
     v_c_data_.resize(6);
@@ -198,12 +208,10 @@ private:
     {
       v_c_data_[i] = msg->data[i];
     }
-    std::cout << "v_c:" << v_c_data_.t() << std::endl;
-    std::cout << "Bottom of v_c_callback" << std::endl;
   }
+
   void errors_xyz_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
-    std::cout << "Top of erros_xyz_callback" << std::endl;
     if (!msg || msg->data.size() != 6)
       return;
     errors_xyz_data_.resize(6);
@@ -211,12 +219,10 @@ private:
     {
       errors_xyz_data_[i] = msg->data[i];
     }
-    std::cout << "errors_xyz:" << errors_xyz_data_.t() << std::endl;
-    std::cout << "Bottom of erros_xyz_callback" << std::endl;
   }
+
   void error_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
-    std::cout << "Top of error_callback" << std::endl;
     if (!msg || msg->data.size() != 2)
       return;
     error_data_.resize(2);
@@ -224,17 +230,10 @@ private:
     {
       error_data_[i] = msg->data[i];
     }
-    std::cout << "error_norms:" << error_data_.t() << std::endl;
-    std::cout << "Bottom of erros_xyz_callback" << std::endl;
   }
 
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) // Runs when new image message received from subscription
   {
-    std::cout << "Top of image_callback" << std::endl;
-
-    // Build Desired Object relative to Camera Frame:
-    cdPo.loadYAML(cdMo_filename, cdPo);
-    vpHomogeneousMatrix cdMo(cdPo);
     cdMc = cdMo * cMo_data_.inverse();
 
     if (!display_initialized_) 
@@ -248,34 +247,12 @@ private:
 #endif
     }
 
-/*
-    vpDisplay *d1 = nullptr;
-    if (!display_off)
-    {
-      #ifdef VISP_HAVE_X11
-        d1 = new vpDisplayX(I_color, 100, 30, "Pose from Homography");
-      #endif
-    }
-*/
-
     try
     {
-/*
-    vpFeatureTranslation t(vpFeatureTranslation::cdMc);
-    vpFeatureThetaU tu(vpFeatureThetaU::cdRc);
-    t.buildFrom(cdMc);
-    tu.buildFrom(cdMc);
-*/
       t = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tu = vpFeatureThetaU(vpFeatureThetaU::cdRc);
       t.buildFrom(cdMc);
       tu.buildFrom(cdMc);
-/*
-    vpFeatureTranslation td(vpFeatureTranslation::cdMc);
-    vpFeatureThetaU tud(vpFeatureThetaU::cdRc);
-    task.addFeature(t, td);
-    task.addFeature(tu, tud);
-*/
       td = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tud = vpFeatureThetaU(vpFeatureThetaU::cdRc);
       task.addFeature(t, td);
@@ -326,32 +303,12 @@ private:
       ss.str("");
       ss << "error_tu: " << error_data_[1];
       vpDisplay::displayText(I, 40, static_cast<int>(I.getWidth()) - 150, ss.str(), vpColor::red);
-
-/*
-    Missing any handling of convergence:
-      if (error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu) //ur16e
-      {
-        has_converged = true; //ur16e
-        std::cout << "Servo task has converged" << std::endl; //ur16e
-        ; //ur16e
-        vpDisplay::displayText(I, 100, 20, "Servo task has converged", vpColor::red); //ur16e
-      }
-*/
-
       ss.str("");
       ss << "Loop time: " << vpTime::measureTimeMs() - t_start << " ms";
 
       vpDisplay::displayText(I_color, 40, 20, ss.str(), vpColor::red);
       vpDisplay::flush(I_color);
-
-/*
-      if (!display_off)
-      {
-        delete d1;
-      }
-*/
     }
-
     catch (const vpException &e)
     {
       std::cerr << "Catch an exception: " << e.getMessage() << std::endl;
@@ -360,7 +317,6 @@ private:
     {
       RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     }
-    std::cout << "End of image_callback" << std::endl;
   }
 
 };
@@ -369,6 +325,9 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<DisplayNode>();
+    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+    exec.add_node(node);
+    exec.spin();
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;

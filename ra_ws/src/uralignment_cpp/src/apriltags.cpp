@@ -44,10 +44,9 @@ public:
   {
 
     image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    apriltag_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions cam_opts;
     cam_opts.callback_group = image_handling_;
-
+    apriltag_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     RCLCPP_INFO(this->get_logger(), "AprilTagNode initialized.");
     // Parameters
@@ -64,13 +63,14 @@ public:
     qos.durability_volatile();
     if (qos_reliability_ == "reliable") qos.reliable();
     else qos.best_effort();
-    // Subscribe to Camera node's topic.
+    // Subscribe to Camera node's topic
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     "/camera/color/image_raw", qos,
     std::bind(&AprilTagNode::image_loop, this, std::placeholders::_1), cam_opts);
-    // Publish cMo:
-    cMo_ = this->create_publisher<geometry_msgs::msg::TransformStamped>("cMo", 10);
-    timer_ = this->create_wall_timer(std::chrono::milliseconds(5), std::bind(&AprilTagNode::apriltag_loop, this), apriltag_handling_);
+
+    cMo_ = this->create_publisher<geometry_msgs::msg::TransformStamped>("cMo", 10); // Publish cMo
+
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(33), std::bind(&AprilTagNode::apriltag_loop, this), apriltag_handling_);
     
     initialization();
   }

@@ -28,9 +28,6 @@
 #include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
-std::atomic<char> last_key_{' '}; // starts “STOP”
-std::atomic<bool> send_velocities_(false);
-std::atomic<bool> should_quit_(false);
 #include <std_msgs/msg/char.hpp>
 #include <atomic>
 #include <chrono>
@@ -42,6 +39,9 @@ std::atomic<bool> should_quit_(false);
 #include <visp3/core/vpTranslationVector.h>
 #include <visp3/core/vpHomogeneousMatrix.h>
 
+std::atomic<char> last_key_{' '}; // starts “STOP”
+std::atomic<bool> send_velocities_(false);
+std::atomic<bool> should_quit_(false);
 
 //! [Macro defined]
 #if defined(VISP_HAVE_APRILTAG) && defined(VISP_HAVE_REALSENSE2) && defined(VISP_HAVE_UR_RTDE) && VISP_NAMESPACE_NAME
@@ -54,18 +54,28 @@ class UniversalRobots_E_Series : public rclcpp::Node
 public:
   UniversalRobots_E_Series() : Node("ur_node")
   {
+    cMo_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // cMo only
+    rclcpp::SubscriptionOptions cMo_opts;
+    cMo_opts.callback_group = cMo_handling_;
+    sub_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant); // All other subscriptions
+    rclcpp::SubscriptionOptions sub_opts;
+    cMo_opts.callback_group = sub_handling_;
+    compute_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // All UR_E_Series work and pubs
+    rclcpp::SubscriptionOptions compute_opts;
+    cMo_opts.callback_group = compute_handling_;
+    
     // Subscriptions:
     cMo_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
-    "cMo", 10, std::bind(&UniversalRobots_E_Series::run_servo_loop, this, std::placeholders::_1));
-
+    "cMo", 10, std::bind(&UniversalRobots_E_Series::cMo_callback, this, std::placeholders::_1), cMo_opts);
     rclcpp::QoS key_qos(1);
     key_qos.reliable().transient_local();  // get latched "last key" immediately
     key_sub_ = this->create_subscription<std_msgs::msg::Char>(
-    "/teleop/last_key", key_qos, std::bind(&UniversalRobots_E_Series::key_callback, this, std::placeholders::_1));
+    "/teleop/last_key", key_qos, 
+    std::bind(&UniversalRobots_E_Series::key_callback, this, std::placeholders::_1), sub_opts);
     offset_twist_sub_ = this->create_subscription<geometry_msgs::msg::TwistStamped>(
     "/offset/cmd_twist_cf",
     rclcpp::SensorDataQoS(),
-    std::bind(&UniversalRobots_E_Series::offset_twist_callback, this, std::placeholders::_1));
+    std::bind(&UniversalRobots_E_Series::offset_twist_callback, this, std::placeholders::_1), sub_opts);
 
     // Publications:
     v_c_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("v_c", 10);
@@ -73,52 +83,59 @@ public:
     errors_xyz_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("errors_xyz", 10);
     pbvs_converged_pub_ = this->create_publisher<std_msgs::msg::Bool>("/pbvs/converged", 10);
 
+    // timer for compute_handling_ callback group
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(33), 
+    std::bind(&UniversalRobots_E_Series::run_servo_loop, this), compute_handling_);
+
     initialization();
   }
   
 private:
-  rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_; // Declare shared pointer to subscription
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr v_c_, error_, errors_xyz_; // Declare shared pointer to publication
+  rclcpp::CallbackGroup::SharedPtr cMo_handling_, sub_handling_, compute_handling_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr v_c_, error_, errors_xyz_;
   rclcpp::Subscription<std_msgs::msg::Char>::SharedPtr key_sub_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr offset_twist_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pbvs_converged_pub_;
+
+  // PBVS Convergence Thresholds!
+  double convergence_threshold_t = 0.001; // Value in [m]
+  double convergence_threshold_tu = 0.1;  // Value in [deg]
 
   // Latch latest offset command
   geometry_msgs::msg::TwistStamped last_offset_twist_;
   rclcpp::Time last_offset_stamp_;
 
-  // Create an instance of vpRobotUniversalRobots Class named 'robot'
-  vpRobotUniversalRobots robot;
+  vpRobotUniversalRobots robot; // Create an instance of vpRobotUniversalRobots Class named 'robot'
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
   std::string eMc_filename = package_path + "/config/ur_eMc.yaml";
   std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
   std::string robot_ip = "192.168.1.101";
-  double convergence_threshold_t = 0.002; // Value in [m]
-  double convergence_threshold_tu = 0.1;  // Value in [deg]
-  vpColVector v_c; // This will store velocity commands
-  vpColVector errors_xyz;
-  vpColVector error;
-  bool opt_adaptive_gain;
+  bool opt_adaptive_gain; 
   bool opt_task_sequencing;
   bool final_quit;
   bool has_converged;
   bool servo_started;
-  bool first_time;
-  bool offset_twist_valid_;
-  bool features_added;
-  vpPoseVector ePc, cdPo;
-  vpHomogeneousMatrix cdMc, cdMo, cMo, oMo, eMc, cMo_data_;
-  vpServo task;
-  std::vector<vpHomogeneousMatrix> v_oMo, v_cdMc;
-  double error_tr;
-  double error_tu;
-  vpFeatureTranslation t;
-  vpFeatureThetaU tu;  
-  vpFeatureTranslation td;
-  vpFeatureThetaU tud;
-
+  bool first_time; // Used for oMo Latching
+  bool offset_twist_valid; // Latch offset velocity
+  bool features_added; // For Error calc
+  bool cMo_valid;
   bool is_quit_key(char k) const { return k == 'q' || k == 'Q' || k == 0x1B; }
   bool should_send_velocities(char k) const { return k == 'x' || k == 'X'; }
+  vpPoseVector ePc, cdPo;
+  vpHomogeneousMatrix cdMc, cdMo, oMo, eMc, cMo_data_;
+  vpColVector v_c, errors_xyz, error; // velocity commands | Error in 6DOF | Trans/Rot Euclidian Norms
+  std::vector<vpHomogeneousMatrix> v_oMo, v_cdMc;
+  vpThetaUVector cd_tu_c;
+  vpFeatureTranslation t, td;
+  vpFeatureThetaU tu, tud;  
+  vpTranslationVector cMo_t, cd_t_c;
+  vpQuaternionVector cMo_q;
+  vpRotationMatrix cMo_R;
+  vpServo task;
+  double error_tr;
+  double error_tu;
 
   void initialization()
   {
@@ -129,52 +146,77 @@ private:
               << "Please make sure to have the user stop button at hand!" << std::endl;
     //! [Robot connection]
 
+    // Get camera extrinsics:
+    ePc.loadYAML(eMc_filename, ePc);
+    eMc.buildFrom(ePc);
+    std::cout << "Read extrinsic parameters from file. eMc:\n" << eMc << "\n";
+    // Build Desired Object relative to Camera Frame:
+    cdPo.loadYAML(cdMo_filename, cdPo);
+    cdMo.buildFrom(cdPo);
+    std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
+    robot.set_eMc(eMc); // Set location of the camera wrt end-effector frame
+    robot.setRobotState(vpRobot::STATE_VELOCITY_CONTROL);
+
     v_c.resize(6);
     errors_xyz.resize(6);
     error.resize(2);
     v_oMo.resize(6);
     v_cdMc.resize(6);
-
+    cMo_valid =  false;
+    cMo_t = vpTranslationVector(0.0, 0.0, 0.0);
+    cMo_q = vpQuaternionVector(0.0, 0.0, 0.0, 1.0);
+    cMo_R.buildFrom(cMo_q);
+    cMo_data_.buildFrom(cMo_t, cMo_R);
     opt_adaptive_gain = false;
     opt_task_sequencing = false;
     final_quit = false;
     has_converged = false;
-    offset_twist_valid_ = false;
+    offset_twist_valid = false;
     features_added = false;
-    //send_velocities = false;
     servo_started = false;
     first_time = true;
 
-    // TODO tune this | TODO: CHECK THAT THIS ONLY NEEDS TO BE RUN ONCE!!!!
-    if (opt_adaptive_gain) 
+    if (opt_adaptive_gain) // Tuneable Gains
     {
       vpAdaptiveGain lambda(1.5, 0.4, 30); // lambda(0)=4, lambda(oo)=0.4 and lambda'(0)=30
       task.setLambda(lambda);
     }
     else
     {
-      task.setLambda(0.2); // TODO tune it
+      task.setLambda(0.2); // Overall speed
     }
-
     task.setServo(vpServo::EYEINHAND_CAMERA);
     task.setInteractionMatrixType(vpServo::CURRENT);
 
     RCLCPP_INFO(this->get_logger(), "ur_e_series node started!");
   }
 
-  void offset_twist_callback(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
+  void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
   {
-    std::cout << "Top of offset_twist_callback" << std::endl;
+    if(!msg) return;
+    const auto& T = msg->transform;
+    cMo_t[0] = T.translation.x;
+    cMo_t[1] = T.translation.y;
+    cMo_t[2] = T.translation.z;
+    cMo_q[0] = T.rotation.x;
+    cMo_q[1] = T.rotation.y;
+    cMo_q[2] = T.rotation.z;
+    cMo_q[3] = T.rotation.w;
+    cMo_R.buildFrom(cMo_q);
+    cMo_data_.buildFrom(cMo_t, cMo_R);
+    cMo_valid = true;
+  }
+
+  void offset_twist_callback(const geometry_msgs::msg::TwistStamped::SharedPtr msg) // Closing Distance v_c
+  {
     if (!msg) return;
     last_offset_twist_ = *msg;
     last_offset_stamp_ = this->now();
-    offset_twist_valid_ = true;
-    std::cout << "Top of offset_twist_callback" << std::endl;
+    offset_twist_valid = true;
   }
 
-  void key_callback(const std_msgs::msg::Char::SharedPtr msg)
+  void key_callback(const std_msgs::msg::Char::SharedPtr msg) // teleop_key callback
   {
-    std::cout << "Top of key_callback" << std::endl;
     const char k = msg->data;
     last_key_.store(k, std::memory_order_relaxed);
 
@@ -200,33 +242,14 @@ private:
     {
       // Ignore any other key
     }
-    std::cout << "Bottom of Key Callback" << std::endl;
   }
 
-  void run_servo_loop(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
+  void run_servo_loop()
   {
-    const auto& T = msg->transform;
-    vpTranslationVector cMo_t(T.translation.x, T.translation.y, T.translation.z);
-    vpQuaternionVector cMo_q(T.rotation.x, T.rotation.y, T.rotation.z, T.rotation.w);
-    vpRotationMatrix cMo_R;
-    cMo_R.buildFrom(cMo_q);
-    cMo_data_ = vpHomogeneousMatrix(cMo_t, cMo_R);
-
-    // Get camera extrinsics:
-    ePc.loadYAML(eMc_filename, ePc);
-    vpHomogeneousMatrix eMc(ePc);
-    std::cout << "Read extrinsic parameters from file. eMc:\n" << eMc << "\n";
-    // Build Desired Object relative to Camera Frame:
-    cdPo.loadYAML(cdMo_filename, cdPo);
-    vpHomogeneousMatrix cdMo(cdPo);
-    std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
-    robot.set_eMc(eMc); // Set location of the camera wrt end-effector frame
-    robot.setRobotState(vpRobot::STATE_VELOCITY_CONTROL);
-
+    if(!cMo_valid){return;}
     cdMc = cdMo * cMo_data_.inverse();
-    std::cout << "cdMc:\n" << cdMc << std::endl;
 
-    if (first_time) // Flip Logic:
+    if(first_time) // oMo cannot be found until receives correct cMo ( i.e. not in initialization() )
     {
       RCLCPP_INFO(this->get_logger(), "first_time = true!");
       // Introduce security wrt tag positioning in order to avoid PI rotation (flip logic):
@@ -247,26 +270,21 @@ private:
         std::cout << "Desired frame modified to avoid PI rotation of the camera" << std::endl;
         oMo = v_oMo[1]; // Introduce PI rotation
       }
-      first_time = false;
+      first_time = false; // Do not return to cMo calc
       std::cout << "oMo:\n" << oMo << std::endl;
     }
 
     try
     {
-      static double t_init_servo = vpTime::measureTimeMs(); // TODO benchmarking time as in detection
+      static double t_init_servo = vpTime::measureTimeMs(); // Initialized once
       const char k = last_key_.load(std::memory_order_relaxed);
-      std::cout << "Last Key: " << k << std::endl;
-      std::cout << "cdMo:\n" << cdMo << std::endl;
       cdMc = cdMo * oMo * cMo_data_.inverse();
-      std::cout << "cdMc:\n" << cdMc << std::endl;
       t = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tu = vpFeatureThetaU(vpFeatureThetaU::cdRc);
       t.buildFrom(cdMc);
       tu.buildFrom(cdMc);
-      vpTranslationVector cd_t_c = cdMc.getTranslationVector();
-      vpThetaUVector cd_tu_c = cdMc.getThetaUVector();
-      std::cout << "cd_t_c: \n" << cd_t_c << std::endl;
-      std::cout << "cd_tu_c: \n" << cd_tu_c << std::endl;
+      cd_t_c = cdMc.getTranslationVector();
+      cd_tu_c = cdMc.getThetaUVector();
       error_tr = sqrt(cd_t_c.sumSquare());
       error_tu = vpMath::deg(sqrt(cd_tu_c.sumSquare()));
       if (!has_converged && error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
@@ -279,7 +297,7 @@ private:
         pbvs_converged_pub_->publish(conv_msg);
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
           "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
-          offset_twist_valid_, age_s, max_age_s);
+          offset_twist_valid, age_s, max_age_s);
       }
       td = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tud = vpFeatureThetaU(vpFeatureThetaU::cdRc);
@@ -305,7 +323,6 @@ private:
       }
 
       const bool enabled = should_send_velocities(k);
-
       if (!enabled)
       {
         v_c = 0;
@@ -330,7 +347,7 @@ private:
       {
         const double max_age_s = 0.1;  // 100 ms watchdog
         const double age_s = (this->now() - last_offset_stamp_).seconds();
-        if (offset_twist_valid_ && age_s < max_age_s)
+        if (offset_twist_valid && age_s < max_age_s)
         {
           v_c[0] = last_offset_twist_.twist.linear.x;
           v_c[1] = last_offset_twist_.twist.linear.y;
@@ -343,12 +360,11 @@ private:
         {
           RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
             "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
-            offset_twist_valid_, age_s, max_age_s);
+            offset_twist_valid, age_s, max_age_s);
           v_c = 0;
         }
       }
       robot.setVelocity(has_converged ? vpRobot::END_EFFECTOR_FRAME : vpRobot::CAMERA_FRAME, v_c);
-      std::cout << "v_c: " << v_c.t() << std::endl;
 
       std_msgs::msg::Float64MultiArray vel;
       vel.layout.dim.resize(2);
@@ -364,8 +380,6 @@ private:
         vel.data[i] = v_c[i];
       }
       v_c_->publish(vel);
-      std::cout << "vel: " << v_c.t() << std::endl;
-
 
       std_msgs::msg::Float64MultiArray errs;
       errs.layout.dim.resize(2);
@@ -386,7 +400,6 @@ private:
         errs.data[i] = errors_xyz[i];
       }
       errors_xyz_->publish(errs);
-      std::cout << "errs: " << errors_xyz.t() << std::endl;
 
       std_msgs::msg::Float64MultiArray err;
       err.layout.dim.resize(2);
@@ -400,8 +413,6 @@ private:
       err.data[0] = error_tr;
       err.data[1] = error_tu;
       error_->publish(err);
-      std::cout << "err: " << error.t() << std::endl;
-
     }
     catch (const vpException &e)
     {
@@ -413,7 +424,6 @@ private:
       std::cout << "ur_rtde exception: " << e.what() << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    std::cout << "Bottom of run_servo_loop" << std::endl;
   }
 
 };
@@ -422,7 +432,7 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<UniversalRobots_E_Series>();
-  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 3);
   exec.add_node(node);
   exec.spin();
   rclcpp::shutdown();

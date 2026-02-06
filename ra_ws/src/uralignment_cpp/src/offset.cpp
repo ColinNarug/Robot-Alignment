@@ -23,11 +23,7 @@ public:
     sub_conv_ = create_subscription<std_msgs::msg::Bool>(
       "/pbvs/converged", 10,
       [&](std_msgs::msg::Bool::SharedPtr msg){ pbvs_converged_ = msg->data; });
-/*
-    sub_enable_ = create_subscription<std_msgs::msg::Bool>(
-      "/haptics/enable", 10,
-      [&](std_msgs::msg::Bool::SharedPtr msg){ haptics_enabled_ = msg->data; });
-*/
+
     sub_wrench_ = this->create_subscription<geometry_msgs::msg::WrenchStamped>(
       "/ur/tcp_wrench", rclcpp::SensorDataQoS(),
       std::bind(&OffsetNode::wrench_callback, this, std::placeholders::_1));
@@ -45,7 +41,6 @@ private:
   State state_{State::IDLE};
   // IO
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_conv_;
-  //rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_enable_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr sub_wrench_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub_twist_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -160,7 +155,6 @@ private:
       }
     }
   }
-
 
   void publishZero(const rclcpp::Time& stamp) 
   {
