@@ -1,30 +1,16 @@
 #include <visp3/core/vpConfig.h>
 #ifdef VISP_HAVE_MODULE_SENSOR
-#include <visp3/sensor/vpRealSense2.h>
 #endif
-#include <visp3/detection/vpDetectorAprilTag.h>
 #include <visp3/core/vpImageConvert.h>
 #include <visp3/core/vpCameraParameters.h>
-#include <visp3/gui/vpDisplayGDI.h>
-#include <visp3/gui/vpDisplayOpenCV.h>
 #include <visp3/gui/vpDisplayX.h>
 #include <visp3/vision/vpPose.h>
-#include <visp3/robot/vpRobotUniversalRobots.h>
-#include <visp3/visual_features/vpFeatureThetaU.h>
-#include <visp3/visual_features/vpFeatureTranslation.h>
-#include <visp3/vs/vpServo.h>
-#include <visp3/vs/vpServoDisplay.h>
 #include <visp3/gui/vpPlot.h>
 #include <string>                    // String Operations
 #include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
-#include "std_msgs/msg/string.hpp"   // ROS2 String Message
 #include "sensor_msgs/msg/image.hpp" // ROS2 Image Message
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
-#include "ament_index_cpp/get_package_share_directory.hpp"
-#include <cmath>
-#include <Eigen/Geometry>
-#include <visp3/vision/vpPose.h>
 #include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -32,6 +18,7 @@
 #include <visp3/core/vpRotationMatrix.h>
 #include <visp3/core/vpTranslationVector.h>
 #include <visp3/core/vpHomogeneousMatrix.h>
+#include <mutex>
 
 
 #if !(defined(VISP_HAVE_X11) || defined(VISP_HAVE_GDI) || defined(VISP_HAVE_OPENCV))
@@ -50,9 +37,12 @@ public:
     image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions cam_opts;
     cam_opts.callback_group = image_handling_;
-    vector_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    vector_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions vector_opts;
-    cam_opts.callback_group = vector_handling_;
+    vector_opts.callback_group = vector_handling_;
+    plot_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions plot_opts;
+    plot_opts.callback_group = plot_handling_;
 
     // Parameters
     width_ = declare_parameter<int>("width",1920);
@@ -85,14 +75,20 @@ public:
     error_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
     "error", 10, std::bind(&DisplayNode::error_callback, this, std::placeholders::_1), vector_opts);
 
+    // timer for plot_loop
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(33), 
+    std::bind(&DisplayNode::plot_callback, this), plot_handling_);
+
     initialization();
   }
 
 private:
-  rclcpp::CallbackGroup::SharedPtr image_handling_, vector_handling_;
+  rclcpp::CallbackGroup::SharedPtr image_handling_, vector_handling_, plot_handling_;
+  rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr v_c_, errors_xyz_, error_;  
   rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+  sensor_msgs::msg::Image::ConstSharedPtr latest_image_;
 
   // Params
   int width_{1920};
@@ -106,27 +102,26 @@ private:
   std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
   bool opt_plot;
   bool display_initialized_;
-  bool cMo_valid;
-  vpColVector v_c_data_, error_data_, errors_xyz_data_;
+  vpColVector v_c_data_, error_data_, errors_xyz_data_, v_local, exyz_local, err_local;
   vpPoseVector cdPo;
-  vpHomogeneousMatrix cdMo, cdMc, oMo, cMo_data_;
-  vpFeatureTranslation t, td;
-  vpFeatureThetaU tu, tud; 
+  vpHomogeneousMatrix cdMo, cdMc, cMo_data_, cMo_local;
   vpTranslationVector cMo_t, cd_t_c;
   vpQuaternionVector cMo_q;
   vpRotationMatrix cMo_R;
-  cv::Mat latest_image_; // Hold latest image
   // Define ViSP image buffers matching RealSense camera resolution:
   vpImage<vpRGBa> I_color;
   vpImage<unsigned char> I;
   vpPlot *plotter = nullptr;
   int iter_plot;
   vpCameraParameters cam;
-  vpServo task;
   std::stringstream ss;
   std::vector<vpImagePoint> *traj_vip = nullptr; // To memorize point trajectory
   double t_start;
   std::unique_ptr<vpDisplay> disp_;
+
+  std::mutex img_mtx_;
+  bool have_img_{false};
+  std::mutex state_mtx_;
 
   void initialization()
   {
@@ -169,10 +164,6 @@ private:
       plotter->setLegend(1, 5, "wc_z");
     }
 
-    task.setServo(vpServo::EYEINHAND_CAMERA);
-    task.setInteractionMatrixType(vpServo::CURRENT);
-
-    cMo_valid = false;
     display_initialized_ = false;
 
     cMo_t = vpTranslationVector(0.0, 0.0, 0.0);
@@ -180,12 +171,26 @@ private:
     cMo_R.buildFrom(cMo_q);
     cMo_data_.buildFrom(cMo_t, cMo_R);
 
+    v_c_data_.resize(6); v_c_data_ = 0;
+    errors_xyz_data_.resize(6); errors_xyz_data_ = 0;
+    error_data_.resize(2); error_data_ = 0;
+
+
     std::cout << "Displays Node Started!" << std::endl;
   }
 
-  void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg) // cMo Callback
+  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+  {
+    if (!msg) return;
+    std::scoped_lock lk(img_mtx_);
+    latest_image_ = msg;
+    have_img_ = true;
+  }
+
+  void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg)
   {
     if(!msg) return;
+    std::scoped_lock lk(state_mtx_);
     const auto& T = msg->transform;
     cMo_t[0] = T.translation.x;
     cMo_t[1] = T.translation.y;
@@ -196,14 +201,13 @@ private:
     cMo_q[3] = T.rotation.w;
     cMo_R.buildFrom(cMo_q);
     cMo_data_.buildFrom(cMo_t, cMo_R);
-    cMo_valid = true;
   }
 
   void v_c_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     if (!msg || msg->data.size() != 6)
       return;
-    v_c_data_.resize(6);
+    std::scoped_lock lk(state_mtx_);
     for (int i = 0; i < 6; ++i)
     {
       v_c_data_[i] = msg->data[i];
@@ -214,7 +218,7 @@ private:
   {
     if (!msg || msg->data.size() != 6)
       return;
-    errors_xyz_data_.resize(6);
+    std::scoped_lock lk(state_mtx_);
     for (int i = 0; i < 6; ++i)
     {
       errors_xyz_data_[i] = msg->data[i];
@@ -225,16 +229,61 @@ private:
   {
     if (!msg || msg->data.size() != 2)
       return;
-    error_data_.resize(2);
+    std::scoped_lock lk(state_mtx_);
     for (int i = 0; i < 2; ++i)
     {
       error_data_[i] = msg->data[i];
     }
   }
 
-  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) // Runs when new image message received from subscription
+  void plot_callback()
   {
-    cdMc = cdMo * cMo_data_.inverse();
+    sensor_msgs::msg::Image::ConstSharedPtr img;
+    {
+      std::scoped_lock lk(img_mtx_);
+      if (!have_img_ || !latest_image_) return;
+      img = latest_image_;
+    }
+
+    {
+      std::scoped_lock lk(state_mtx_);
+      cMo_local = cMo_data_;
+      v_local = v_c_data_;
+      exyz_local = errors_xyz_data_;
+      err_local = error_data_;
+    }
+    cdMc = cdMo * cMo_local.inverse(); // Update visual features
+
+    // Convertion (GUI thread)
+    cv_bridge::CvImageConstPtr cv_ptr;
+    try 
+    {
+      cv_ptr = cv_bridge::toCvShare(img, sensor_msgs::image_encodings::BGR8);
+    }
+    catch (const cv_bridge::Exception &e)
+    {
+      RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+      return;
+    }
+    const cv::Mat &mat = cv_ptr->image;
+    if (mat.empty()) return;
+
+    // Ensure dimensions match before writing
+    const int h = mat.rows, w = mat.cols;
+    if ((int)I_color.getHeight() != h || (int)I_color.getWidth() != w) 
+    {
+      I_color.resize(h, w);
+      I.resize(h, w);
+      display_initialized_ = false;
+    }
+
+    // Convert mat -> I_color
+    for (int i=0;i<h;++i)
+      for (int j=0;j<w;++j) 
+      {
+        const cv::Vec3b &p = mat.at<cv::Vec3b>(i,j);
+        I_color[i][j] = vpRGBa(p[2], p[1], p[0]);
+      }
 
     if (!display_initialized_) 
     {
@@ -249,59 +298,29 @@ private:
 
     try
     {
-      t = vpFeatureTranslation(vpFeatureTranslation::cdMc);
-      tu = vpFeatureThetaU(vpFeatureThetaU::cdRc);
-      t.buildFrom(cdMc);
-      tu.buildFrom(cdMc);
-      td = vpFeatureTranslation(vpFeatureTranslation::cdMc);
-      tud = vpFeatureThetaU(vpFeatureThetaU::cdRc);
-      task.addFeature(t, td);
-      task.addFeature(tu, tud);
-
-      RCLCPP_INFO(this->get_logger(), "Image callback triggered! Image resolution: %d x %d", msg->width, msg->height);
-
-      // Convert ROS2 image message to OpenCV-compatible cv::Mat:
-      cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8); 
-      latest_image_ = cv_ptr->image.clone(); // Copy image to latest_image_
-      // Convert OpenCV BGR image to vpImage<vpRGBa>:
-      for (int i = 0; i < latest_image_.rows; ++i)
-      {
-        for (int j = 0; j < latest_image_.cols; ++j)
-        {
-          const cv::Vec3b &pixel = latest_image_.at<cv::Vec3b>(i, j);
-          I_color[i][j] = vpRGBa(pixel[2], pixel[1], pixel[0]); // BGR to RGBa
-        }
-      }
-
-      // Update visual features:
-      cdMc = cdMo * oMo * cMo_data_.inverse();
-      t.buildFrom(cdMc);
-      tu.buildFrom(cdMc);
-
       if (disp_)
       {
         vpDisplay::display(I_color);
         vpImageConvert::convert(I_color, I);
         vpDisplay::displayText(I, 20, 20, ss.str(), vpColor::red);
         // Display desired and current pose features:
-        vpDisplay::displayFrame(I_color, cdMo * oMo, cam, 0.06512, vpColor::yellow, 2);
-        vpDisplay::displayFrame(I_color, cMo_data_, cam, 0.06512, vpColor::none, 3);
-        // TODO display trajectory of Pose
+        vpDisplay::displayFrame(I_color, cdMo, cam, 0.06512, vpColor::yellow, 2);
+        vpDisplay::displayFrame(I_color, cMo_local, cam, 0.06512, vpColor::none, 3);
         vpDisplay::flush(I_color);
       }
 
       if (opt_plot)
       {
-      plotter->plot(0, iter_plot, errors_xyz_data_);
-      plotter->plot(1, iter_plot, v_c_data_);
-      iter_plot++;
+        plotter->plot(0, iter_plot, exyz_local);
+        plotter->plot(1, iter_plot, v_local);
+        iter_plot++;
       }
 
       ss.str("");
-      ss << "error_t: " << error_data_[0];
+      ss << "error_t: " << err_local[0];
       vpDisplay::displayText(I, 20, static_cast<int>(I.getWidth()) - 150, ss.str(), vpColor::red);
       ss.str("");
-      ss << "error_tu: " << error_data_[1];
+      ss << "error_tu: " << err_local[1];
       vpDisplay::displayText(I, 40, static_cast<int>(I.getWidth()) - 150, ss.str(), vpColor::red);
       ss.str("");
       ss << "Loop time: " << vpTime::measureTimeMs() - t_start << " ms";
@@ -325,10 +344,9 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<DisplayNode>();
-    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 3);
     exec.add_node(node);
     exec.spin();
-    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }

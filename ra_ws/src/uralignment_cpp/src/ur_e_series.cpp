@@ -1,30 +1,17 @@
 #include <visp3/core/vpConfig.h>
 #ifdef VISP_HAVE_MODULE_SENSOR
-#include <visp3/sensor/vpRealSense2.h>
 #endif
-#include <visp3/detection/vpDetectorAprilTag.h>
-#include <visp3/core/vpImageConvert.h>
-#include <visp3/core/vpCameraParameters.h>
-#include <visp3/gui/vpDisplayGDI.h>
-#include <visp3/gui/vpDisplayOpenCV.h>
-#include <visp3/gui/vpDisplayX.h>
 #include <visp3/vision/vpPose.h>
 #include <visp3/robot/vpRobotUniversalRobots.h>
 #include <visp3/visual_features/vpFeatureThetaU.h>
 #include <visp3/visual_features/vpFeatureTranslation.h>
 #include <visp3/vs/vpServo.h>
-#include <visp3/vs/vpServoDisplay.h>
-#include <visp3/gui/vpPlot.h>
 #include <string>                    // String Operations
 #include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
 #include "std_msgs/msg/string.hpp"   // ROS2 String Message
-#include "sensor_msgs/msg/image.hpp" // ROS2 Image Message
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
-#include "ament_index_cpp/get_package_share_directory.hpp"
 #include <cmath>
-#include <Eigen/Geometry>
-#include <visp3/vision/vpPose.h>
 #include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -33,7 +20,6 @@
 #include <chrono>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
-#include <geometry_msgs/msg/twist.hpp>
 #include <visp3/core/vpQuaternionVector.h>
 #include <visp3/core/vpRotationMatrix.h>
 #include <visp3/core/vpTranslationVector.h>
@@ -59,10 +45,10 @@ public:
     cMo_opts.callback_group = cMo_handling_;
     sub_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant); // All other subscriptions
     rclcpp::SubscriptionOptions sub_opts;
-    cMo_opts.callback_group = sub_handling_;
+    sub_opts.callback_group = sub_handling_;
     compute_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // All UR_E_Series work and pubs
     rclcpp::SubscriptionOptions compute_opts;
-    cMo_opts.callback_group = compute_handling_;
+    compute_opts.callback_group = compute_handling_;
     
     // Subscriptions:
     cMo_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(

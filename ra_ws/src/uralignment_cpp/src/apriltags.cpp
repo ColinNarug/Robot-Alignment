@@ -1,34 +1,20 @@
 #include <visp3/core/vpConfig.h>
 #ifdef VISP_HAVE_MODULE_SENSOR
-#include <visp3/sensor/vpRealSense2.h>
 #endif
 #include <visp3/detection/vpDetectorAprilTag.h>
 #include <visp3/core/vpImageConvert.h>
 #include <visp3/core/vpCameraParameters.h>
-#include <visp3/gui/vpDisplayGDI.h>
-#include <visp3/gui/vpDisplayOpenCV.h>
-#include <visp3/gui/vpDisplayX.h>
-#include <visp3/vision/vpPose.h>
-#include <visp3/robot/vpRobotUniversalRobots.h>
-#include <visp3/visual_features/vpFeatureThetaU.h>
-#include <visp3/visual_features/vpFeatureTranslation.h>
-#include <visp3/vs/vpServo.h>
-#include <visp3/vs/vpServoDisplay.h>
 #include <visp3/gui/vpPlot.h>
 #include <string>                    // String Operations
 #include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
-#include "std_msgs/msg/string.hpp"   // ROS2 String Message
 #include "sensor_msgs/msg/image.hpp" // ROS2 Image Message
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
-#include "ament_index_cpp/get_package_share_directory.hpp"
 #include <cmath>
 #include <Eigen/Geometry>
-#include <visp3/vision/vpPose.h>
 #include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
-#include <tf2/tf2/LinearMath/Quaternion.hpp>        // for matrix quaternion
 #include <tf2/tf2/LinearMath/Matrix3x3.h>
 
 //! [Macro defined]
@@ -235,7 +221,6 @@ private:
         }
         // Passes the filtered vectors to findPose:
         cMo = findPose(filteredModelHoles, filteredTrackedHoles);
-        //cMo = findPose(filteredModelHoles, filteredTrackedHoles); // TODO write algorithm directly for column vectors
         if (cMo == vpHomogeneousMatrix())
         {
           std::cerr << "WARNING: cMo is identity. Pose estimation failed or returned invalid transform." << std::endl;
@@ -248,19 +233,8 @@ private:
             std::cerr << pt.t() << std::endl;
         }
 
-        // To save current cMo in .yaml:
-        /*
-        vpPoseVector cPo(cMo);
-        std::stringstream ss_cPo;
-        //std::cout << "cPo: " << cPo.t() << std::endl;
-        ss_cPo << package_path + "/data/ur_pose_cPo.yaml";
-        cPo.saveYAML(ss_cPo.str(), cPo); // Save target pose in camera frame
-        */
-
         cMo.extract(t);
-        //std::cout << "t:\n" << t << "\n";
         cMo.extract(R);
-        //std::cout << "R:\n" << R << "\n";
         tf2::Matrix3x3 m
           (
           R[0][0], R[0][1], R[0][2],
@@ -271,7 +245,6 @@ private:
         // Convert rotation matrix to quaternion
         tf2::Quaternion q;
         m.getRotation(q);
-        //std::cout << "q:\n" << q << "\n";
 
         // Build TransformStamped
         geometry_msgs::msg::TransformStamped tf_msg;
@@ -288,7 +261,6 @@ private:
 
         // Publish
         cMo_->publish(tf_msg);
-        //std::cout << "cMo_(Quaternion):\n" << cMo_ << "\n";
       }
     }
     catch (cv_bridge::Exception &e)
