@@ -37,7 +37,7 @@ public:
     image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions cam_opts;
     cam_opts.callback_group = image_handling_;
-    vector_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    vector_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     rclcpp::SubscriptionOptions vector_opts;
     vector_opts.callback_group = vector_handling_;
     plot_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

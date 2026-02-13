@@ -1,6 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/char.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <cmath>
@@ -15,23 +14,15 @@ public:
   {
     // Parameters
     f_contact_ = declare_parameter<double>("f_contact", 10.0); // N
-    debounce_n_ = declare_parameter<int>("debounce_n", 25);
+    debounce_n_ = declare_parameter<int>("debounce_n", 3);
     v0_ = declare_parameter<double>("v0", 0.025); // m/s
     vmin_ = declare_parameter<double>("vmin", 0.005); // m/s
     tau_ = declare_parameter<double>("tau", 4.0); // s
     timeout_s_ = declare_parameter<double>("approach_timeout_s", 30.0);
-    contact_grace_s_ = declare_parameter<double>("contact_grace_s", 0.25); // s
 
     sub_conv_ = create_subscription<std_msgs::msg::Bool>(
       "/pbvs/converged", 10,
       [&](std_msgs::msg::Bool::SharedPtr msg){ pbvs_converged_ = msg->data; });
-
-    // Key subscription (latched)
-    rclcpp::QoS key_qos(1);
-    key_qos.reliable().transient_local();
-    sub_key_ = create_subscription<std_msgs::msg::Char>(
-      "/teleop/last_key", key_qos,
-      std::bind(&OffsetNode::key_callback, this, std::placeholders::_1));
 
     sub_wrench_ = this->create_subscription<geometry_msgs::msg::WrenchStamped>(
       "/ur/tcp_wrench", rclcpp::SensorDataQoS(),
@@ -50,7 +41,6 @@ private:
   State state_{State::IDLE};
   // IO
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_conv_;
-  rclcpp::Subscription<std_msgs::msg::Char>::SharedPtr sub_key_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr sub_wrench_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub_twist_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -67,46 +57,6 @@ private:
   double f_contact_{10.0};
   int debounce_n_{3};
   double v0_{0.02}, vmin_{0.002}, tau_{1.0}, timeout_s_{10.0};
-  double contact_grace_s_{0.25};
-
-  void key_callback(const std_msgs::msg::Char::SharedPtr msg)
-{
-  if (!msg) return;
-  const char k = static_cast<char>(msg->data);
-
-  if (k == 'x' || k == 'X')
-  {
-    haptics_enabled_ = true;
-
-    // Allow restart after DONE/FAULT (no process restart needed)
-    if (state_ == State::DONE || state_ == State::FAULT)
-    {
-      state_ = State::IDLE;
-      RCLCPP_INFO(get_logger(), "Key=X/x -> ENABLE. Resetting state to IDLE (restart allowed).");
-    }
-    else
-    {
-      RCLCPP_INFO(get_logger(), "Key=X/x -> ENABLE.");
-    }
-  }
-  else if (k == ' ')  // STOP
-  {
-    haptics_enabled_ = false;
-
-    // Force OffsetNode to stop publishing approach motion immediately
-    state_ = State::IDLE;
-    publishZero(now());  // Immediate zero publish (next tick will also publish zero)
-    RCLCPP_INFO(get_logger(), "Key=Space -> DISABLE. Forcing IDLE + zero twist.");
-  }
-  else if (k == 'q' || k == 'Q' || k == 0x1B)
-  {
-    haptics_enabled_ = false;
-    state_ = State::IDLE;
-    publishZero(now());
-    RCLCPP_WARN(get_logger(), "Key=Esc/Q/q -> DISABLE. Forcing IDLE + zero twist.");
-  }
-}
-
 
   void wrench_callback(const geometry_msgs::msg::WrenchStamped::SharedPtr msg)
   {
@@ -127,17 +77,8 @@ private:
   {
     const auto now_t = now();
 
-    // Hard gate. If disabled, always publish zero and hold IDLE.
-    if (!haptics_enabled_)
-    {
-      publishZero(now_t);
-      state_ = State::IDLE;
-      return;
-    }
-
     switch (state_) 
     {
-
       case State::IDLE: 
       {
         publishZero(now_t);
@@ -197,46 +138,14 @@ private:
           return;
         }
 
-        // Smooth ramp-up from 0 to v0_ (base speed).
-        const double v_target = v0_;  // base/steady approach speed
-        double v = 0.0;
-        if (tau_ > 1e-6) {
-          v = v_target * (1.0 - std::exp(-t / tau_)); // continuous ramp (no step)
-        } else {
-          v = v_target; // degenerate case
-        }
-        v = std::clamp(v, 0.0, v_target);
-
-        // Ignore contact detection briefly at APPROACH start (handles start transient)
-        if (t < contact_grace_s_) {
-          contact_count_ = 0;
-        }
-
-        // Only evaluate/accumulate contact after grace period
-        if (t >= contact_grace_s_) {
-          const auto & f = last_wrench_.wrench.force;
-          const double fmag = std::sqrt(f.x*f.x + f.y*f.y + f.z*f.z);
-          if (fmag > f_contact_) {
-            contact_count_++;
-          } else {
-            contact_count_ = 0;
-          }
-
-          if (contact_count_ >= debounce_n_) {
-            publishZero(now_t);
-            state_ = State::DONE;
-            RCLCPP_INFO(get_logger(), "Contact detected. DONE.");
-            return;
-          }
-        }
-
+        // Decaying approach velocity along camera-frame +Z
+        const double v = std::max(vmin_, v0_ * std::exp(-t / tau_));
         geometry_msgs::msg::TwistStamped cmd;
         cmd.header.stamp = now_t;
         cmd.header.frame_id = "tooling_frame";
         cmd.twist.linear.z = v;
         pub_twist_->publish(cmd);
         return;
-
       }
       case State::DONE:
       case State::FAULT: 

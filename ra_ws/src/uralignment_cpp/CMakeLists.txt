@@ -87,6 +87,14 @@ ament_target_dependencies(wrench rclcpp geometry_msgs)
 target_link_libraries(wrench ur_rtde::rtde)
 #################################################################
 
+# tracker ##########################################################
+add_executable(tracker src/tracker.cpp)
+target_link_libraries(tracker yaml-cpp ${OpenCV_LIBS})
+ament_target_dependencies(tracker rclcpp std_msgs sensor_msgs geometry_msgs ament_index_cpp)
+target_compile_features(tracker PUBLIC cxx_std_17) 
+####################################################################
+
+
 
 install(TARGETS
   demo_servo
@@ -98,6 +106,7 @@ install(TARGETS
   teleop_key
   offset
   wrench
+  tracker
   DESTINATION lib/${PROJECT_NAME})
 
 # Installs the built executables into ROS2 directory
@@ -107,7 +116,7 @@ install(DIRECTORY config/
 install(DIRECTORY data/
   DESTINATION share/${PROJECT_NAME}/data)
 
-install(DIRECTORY launch/
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
 
 # Default to C++14

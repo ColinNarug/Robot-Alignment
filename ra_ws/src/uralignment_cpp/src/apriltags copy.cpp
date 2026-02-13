@@ -42,7 +42,7 @@ public:
     width_ = declare_parameter<int>("width",1920);
     height_ = declare_parameter<int>("height",1080);
     fps_ = declare_parameter<int>("fps",30);
-    // QoS controls 
+    // QoS controls
     qos_depth_ = this->declare_parameter<int>("qos_depth", 1);
     qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "best_effort" or "reliable"
     // Encoding
@@ -62,7 +62,7 @@ public:
     cMo_ = this->create_publisher<geometry_msgs::msg::TransformStamped>("cMo", 10); // Publish cMo
 
     timer_ = this->create_wall_timer(std::chrono::milliseconds(33), std::bind(&AprilTagNode::apriltag_loop, this), apriltag_handling_);
-    
+
     initialization();
   }
 
@@ -80,7 +80,7 @@ private:
   int qos_depth_{1};
   std::string qos_reliability_{"best_effort"};
   std::string preferred_encoding_{"bgr8"};
-  
+
   double tagSize = 0.0221;
   float quad_decimate = 1.0;
   int nThreads = 1;
@@ -121,11 +121,11 @@ private:
 
     trackedHoles.resize(4);
     detectedMask.resize(4, false);
-        for (int i = 0; i < trackedHoles.size(); ++i)
+    for (int i = 0; i < trackedHoles.size(); ++i)
     {
       trackedHoles[i].resize(3); // to avoid segmentation fault
     }
-    
+
     modelHoles.resize(4);
     for (int i = 0; i < modelHoles.size(); ++i)
     {
@@ -183,7 +183,7 @@ private:
 
       // Convertion (GUI thread)
       cv_bridge::CvImageConstPtr cv_ptr;
-      try 
+      try
       {
         const std::string enc = (preferred_encoding_ == "rgb8") ? sensor_msgs::image_encodings::RGB8
                                                                : sensor_msgs::image_encodings::BGR8;
@@ -226,6 +226,7 @@ private:
       {
         for (size_t i = 0; i < cMo_vec.size(); i++)
         {
+          // vpDisplay::displayFrame(I_color, cMo_vec[i], cam, tagSize / 2, vpColor::none, 3); // For each AprilTag
           vpTranslationVector t;
           cMo_vec[i].extract(t);
 
@@ -280,9 +281,9 @@ private:
         // Publish
         cMo_->publish(tf_msg);
       }
-    
+
   }
-  
+
   // Kabsch.cpp Start: ======================================================================
   Eigen::Affine3d Find3DAffineTransformSameScale(Eigen::Matrix3Xd in, Eigen::Matrix3Xd out)
 {
