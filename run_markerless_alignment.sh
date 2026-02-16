@@ -123,6 +123,7 @@ tmux attach -t "$TMUX_SESSION"
 # chmod +x ~/Robot-Alignment/run_markerless_alignment.desktop
 # gio set ~/Robot-Alignment/run_markerless_alignment.desktop metadata::trusted true
 #
+<<<<<<< HEAD
 # Launcher on ~/Desktop
 # nano ~/Desktop/run_markerless_alignment.desktop
 # [Desktop Entry]
@@ -138,3 +139,5 @@ tmux attach -t "$TMUX_SESSION"
 # chmod +x ~/Desktop/run_markerless_alignment.desktop
 # gio set ~/Desktop/run_markerless_alignment.desktop metadata::trusted true
 #
+=======
+>>>>>>> 4bba20e (updates)

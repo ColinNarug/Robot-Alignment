@@ -16,8 +16,8 @@ public:
 
     f_contact_        = declare_parameter<double>("f_contact", 10.0); // N 
     debounce_n_       = declare_parameter<int>("debounce_n", 25); // threshold
-    v0_               = declare_parameter<double>("v0", 0.010); // m/s
-    vmin_             = declare_parameter<double>("vmin", 0.005); // m/s
+    v0_               = declare_parameter<double>("v0", 0.003); // m/s
+    vmin_             = declare_parameter<double>("vmin", 0.001); // m/s
     tau_              = declare_parameter<double>("tau", 1.0); // s
     timeout_s_        = declare_parameter<double>("approach_timeout_s", 30.0); // s
 
@@ -81,7 +81,7 @@ private:
   // Params
   double f_contact_{10.0};
   int debounce_n_{25};
-  double v0_{0.010}, vmin_{0.005}, tau_{1.0}, timeout_s_{30.0};
+  double v0_{0.003}, vmin_{0.001}, tau_{1.0}, timeout_s_{30.0};
   double contact_grace_s_{0.25};
   double baseline_window_s_{0.25};
 
