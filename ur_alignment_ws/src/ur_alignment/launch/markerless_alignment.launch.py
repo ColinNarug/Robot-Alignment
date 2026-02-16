@@ -11,6 +11,8 @@ def generate_launch_description() -> LaunchDescription:
         executable="realsense_data_publisher.py",
         output="screen",
         emulate_tty=True,
+        respawn=True,
+        respawn_delay=2.0,
     )
 
     markerless_node = Node(
@@ -18,6 +20,8 @@ def generate_launch_description() -> LaunchDescription:
         executable="markerless_pose_estimator.py",
         output="screen",
         emulate_tty=True,
+        respawn=True,
+        respawn_delay=2.0,
     )
 
     ui_node = Node(
@@ -25,10 +29,12 @@ def generate_launch_description() -> LaunchDescription:
         executable="user_interface.py",
         output="screen",
         emulate_tty=True,
+        respawn=True,
+        respawn_delay=2.0,
     )
 
     return LaunchDescription([
-        realsense_node,
-        TimerAction(period=10.0, actions=[markerless_node]),
-        TimerAction(period=15.0, actions=[ui_node]),
+        TimerAction(period=2.0, actions=[realsense_node]),
+        TimerAction(period=4.0, actions=[markerless_node]),
+        TimerAction(period=6.0, actions=[ui_node]),
     ])
