@@ -18,6 +18,8 @@
 #include <std_msgs/msg/char.hpp>
 #include <atomic>
 #include <chrono>
+#include <csignal>
+#include <visp3/core/vpTime.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <visp3/core/vpQuaternionVector.h>
@@ -28,6 +30,13 @@
 std::atomic<char> last_key_{' '}; // starts “STOP”
 std::atomic<bool> send_velocities_(false);
 std::atomic<bool> should_quit_(false);
+std::atomic<bool> sighup_requested_(false);
+
+extern "C" void ra_sighup_handler(int)
+{
+  // Signal-safe: only touch atomics
+  sighup_requested_.store(true, std::memory_order_relaxed);
+}
 
 //! [Macro defined]
 #if defined(VISP_HAVE_APRILTAG) && defined(VISP_HAVE_REALSENSE2) && defined(VISP_HAVE_UR_RTDE) && VISP_NAMESPACE_NAME
@@ -74,6 +83,15 @@ public:
     std::bind(&UniversalRobots_E_Series::run_servo_loop, this), compute_handling_);
 
     initialization();
+
+    last_offset_stamp_ = this->now();
+    last_key_stamp_ = this->now();
+  }
+
+  ~UniversalRobots_E_Series() override
+  {
+    // Best-effort safety stop on normal shutdown paths (SIGINT, rclcpp::shutdown(), clean exit).
+    safe_stop_robot("~UniversalRobots_E_Series");
   }
   
 private:
@@ -92,6 +110,9 @@ private:
   // Latch latest offset command
   geometry_msgs::msg::TwistStamped last_offset_twist_;
   rclcpp::Time last_offset_stamp_;
+  // Latch latest teleop key time (watchdog)
+  rclcpp::Time last_key_stamp_;
+  bool key_received_{false};
 
   vpRobotUniversalRobots robot; // Create an instance of vpRobotUniversalRobots Class named 'robot'
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
@@ -122,6 +143,28 @@ private:
   vpServo task;
   double error_tr;
   double error_tu;
+
+    void safe_stop_robot(const char *where)
+  {
+    try
+    {
+      vpColVector zero(6);
+      zero = 0;
+
+      // Send zero velocity in BOTH frames (best-effort)
+      try { robot.setVelocity(vpRobot::CAMERA_FRAME, zero); } catch (...) {}
+      try { robot.setVelocity(vpRobot::END_EFFECTOR_FRAME, zero); } catch (...) {}
+
+      // Also request STOP state to terminate any underlying velocity script
+      try { robot.setRobotState(vpRobot::STATE_STOP); } catch (...) {}
+
+      RCLCPP_WARN(this->get_logger(), "Safety stop requested (%s)", where);
+    }
+    catch (...)
+    {
+      // Safety path must never throw.
+    }
+  }
 
   void initialization()
   {
@@ -158,6 +201,7 @@ private:
     final_quit = false;
     has_converged = false;
     offset_twist_valid = false;
+    last_offset_stamp_ = this->now();
     features_added = false;
     servo_started = false;
     first_time = true;
@@ -205,6 +249,8 @@ private:
   {
     const char k = msg->data;
     last_key_.store(k, std::memory_order_relaxed);
+    last_key_stamp_ = this->now();
+    key_received_ = false;
 
     if (k == 'x' || k == 'X') 
     { 
@@ -232,6 +278,12 @@ private:
 
   void run_servo_loop()
   {
+    if (sighup_requested_.load(std::memory_order_relaxed))
+    {
+      safe_stop_robot("SIGHUP");
+      rclcpp::shutdown();
+      return;
+    }
     if(!cMo_valid){return;}
     cdMc = cdMo * cMo_data_.inverse();
 
@@ -264,6 +316,7 @@ private:
     {
       static double t_init_servo = vpTime::measureTimeMs(); // Initialized once
       const char k = last_key_.load(std::memory_order_relaxed);
+      const bool teleop_present = (this->count_publishers("/teleop/last_key") > 0);
       cdMc = cdMo * oMo * cMo_data_.inverse();
       t = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tu = vpFeatureThetaU(vpFeatureThetaU::cdRc);
@@ -273,17 +326,19 @@ private:
       cd_tu_c = cdMc.getThetaUVector();
       error_tr = sqrt(cd_t_c.sumSquare());
       error_tu = vpMath::deg(sqrt(cd_tu_c.sumSquare()));
-      if (!has_converged && error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
+      const bool enabled_key = should_send_velocities(k);
+      const bool enabled = enabled_key && teleop_present;
+      if (!has_converged && enabled && error_tr < convergence_threshold_t && error_tu < convergence_threshold_tu)
       {
-        const double max_age_s = 1.0; // 100ms safety watchdog
-        const double age_s = (this->now() - last_offset_stamp_).seconds();
         has_converged = true;
         std_msgs::msg::Bool conv_msg;
         conv_msg.data = true;
         pbvs_converged_pub_->publish(conv_msg);
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-          "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
-          offset_twist_valid, age_s, max_age_s);
+        if (!offset_twist_valid)
+        {
+          RCLCPP_WARN(this->get_logger(),
+          "PBVS converged, but no offset twist has been received yet. Holding v_c=0 in APPROACH.");
+        }
       }
       td = vpFeatureTranslation(vpFeatureTranslation::cdMc);
       tud = vpFeatureThetaU(vpFeatureThetaU::cdRc);
@@ -297,20 +352,19 @@ private:
       if (is_quit_key(k))
       {
         v_c = 0;
-        try 
-        {
-          robot.setVelocity(has_converged ? vpRobot::END_EFFECTOR_FRAME : vpRobot::CAMERA_FRAME, v_c);
-        } 
-        catch (...) {}
+       safe_stop_robot("quit key");
         RCLCPP_WARN(this->get_logger(), "Quit key received. Stopping robot then shutting down...");
-        rclcpp::sleep_for(std::chrono::seconds(1));
         rclcpp::shutdown();
         return;
       }
 
-      const bool enabled = should_send_velocities(k);
-      if (!enabled)
+      if (!enabled_key || !teleop_present)
       {
+        if (!teleop_present)
+        {
+          RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                               "No teleop/last_key publisher detected. Forcing STOP.");
+        }
         v_c = 0;
       }
       else if (!has_converged)
@@ -331,22 +385,32 @@ private:
       }
       else
       {
-        const double max_age_s = 0.1;  // 100 ms watchdog
-        const double age_s = (this->now() - last_offset_stamp_).seconds();
-        if (offset_twist_valid && age_s < max_age_s)
+        // Offset watchdog: only use offset twist if it has been updated recently.
+        const double max_age_s = 0.1;  // 100 ms
+
+        if (offset_twist_valid)
         {
+          const double age_s = (this->now() - last_offset_stamp_).seconds();
+          if (age_s < max_age_s)
+          {
           v_c[0] = last_offset_twist_.twist.linear.x;
           v_c[1] = last_offset_twist_.twist.linear.y;
           v_c[2] = last_offset_twist_.twist.linear.z;
           v_c[3] = last_offset_twist_.twist.angular.x;
           v_c[4] = last_offset_twist_.twist.angular.y;
           v_c[5] = last_offset_twist_.twist.angular.z;
+          }
+          else
+          {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+            "Offset twist stale -> zeroing v_c (age=%.3fs, max=%.3fs)", age_s, max_age_s);
+            v_c = 0;
+          }
         }
         else
         {
           RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-            "Offset twist stale/invalid -> zeroing v_c (valid=%d, age=%.3fs, max=%.3fs)",
-            offset_twist_valid, age_s, max_age_s);
+            "No offset twist received -> holding v_c=0");
           v_c = 0;
         }
       }
@@ -402,13 +466,19 @@ private:
     }
     catch (const vpException &e)
     {
-      std::cerr << "Catch an exception: " << e.getMessage() << std::endl;
+      const std::string msg = e.getMessage();
+      RCLCPP_ERROR(this->get_logger(), "ViSP exception in run_servo_loop(): %s", msg.c_str());
+      safe_stop_robot("vpException");
+      rclcpp::shutdown();
+      return;
     }
 
     catch (const std::exception &e)
     {
-      std::cout << "ur_rtde exception: " << e.what() << std::endl;
-      std::exit(EXIT_FAILURE);
+      RCLCPP_ERROR(this->get_logger(), "Exception in run_servo_loop(): %s", e.what());
+      safe_stop_robot("exception");
+      rclcpp::shutdown();
+      return;
     }
   }
 
@@ -416,6 +486,7 @@ private:
 
 int main(int argc, char **argv)
 {
+  std::signal(SIGHUP, ra_sighup_handler);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<UniversalRobots_E_Series>();
   rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 3);
