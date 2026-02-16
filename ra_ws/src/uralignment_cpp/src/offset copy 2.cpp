@@ -1,3 +1,4 @@
+// L1
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/char.hpp>
@@ -13,18 +14,25 @@ class OffsetNode : public rclcpp::Node
 public:
   OffsetNode() : Node("offset_node")
   {
-
-    f_contact_        = declare_parameter<double>("f_contact", 10.0); // N 
-    debounce_n_       = declare_parameter<int>("debounce_n", 25); // threshold
-    v0_               = declare_parameter<double>("v0", 0.010); // m/s
-    vmin_             = declare_parameter<double>("vmin", 0.005); // m/s
-    tau_              = declare_parameter<double>("tau", 1.0); // s
+    // -----------------------------
+    // Parameters
+    // -----------------------------
+    f_contact_        = declare_parameter<double>("f_contact", 10.0);          // N (CONTACT delta threshold above baseline)
+    debounce_n_       = declare_parameter<int>("debounce_n", 25);              // consecutive samples over threshold
+    v0_               = declare_parameter<double>("v0", 0.010);                // m/s (BASE / TARGET approach speed; ramps up to this)
+    vmin_             = declare_parameter<double>("vmin", 0.005);              // m/s (kept for compatibility; not used in ramp mode)
+    tau_              = declare_parameter<double>("tau", 1.0);                 // s   (ramp-up time constant)
     timeout_s_        = declare_parameter<double>("approach_timeout_s", 30.0); // s
 
-    contact_grace_s_  = declare_parameter<double>("contact_grace_s", 0.25); // s
+    // NEW: ignore contact detection briefly after APPROACH begins (handles transient)
+    contact_grace_s_  = declare_parameter<double>("contact_grace_s", 0.25);    // s
 
-    baseline_window_s_ = declare_parameter<double>("baseline_window_s", 0.25); // s
+    // NEW: measure baseline wrench while stationary between PBVS converge and APPROACH
+    baseline_window_s_ = declare_parameter<double>("baseline_window_s", 0.25); // s (stationary averaging window)
 
+    // -----------------------------
+    // Subscriptions / Publications
+    // -----------------------------
     sub_conv_ = create_subscription<std_msgs::msg::Bool>(
       "/pbvs/converged", 10,
       [&](std_msgs::msg::Bool::SharedPtr msg) {
@@ -32,7 +40,7 @@ public:
         pbvs_converged_ = msg->data;
       });
 
-    // Key subscription (latched)
+    // Key subscription (latched) for enable/disable during APPROACH
     rclcpp::QoS key_qos(1);
     key_qos.reliable().transient_local();
     sub_key_ = create_subscription<std_msgs::msg::Char>(
@@ -55,21 +63,28 @@ private:
   enum class State { IDLE, BASELINE, APPROACH, DONE, FAULT };
   State state_{State::IDLE};
 
+  // IO
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_conv_;
   rclcpp::Subscription<std_msgs::msg::Char>::SharedPtr sub_key_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr sub_wrench_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub_twist_;
   rclcpp::TimerBase::SharedPtr timer_;
 
+  // State
   bool pbvs_converged_{false};
+
+  // Teleop gating
   bool haptics_enabled_{false}; // require X to run
+
+  // Wrench stream
   bool have_wrench_{false};
   bool printed_first_wrench_{false};
   geometry_msgs::msg::WrenchStamped last_wrench_;
   rclcpp::Time last_wrench_rx_time_;
 
-  rclcpp::Time t_start_;  // APPROACH start time
-  rclcpp::Time t_baseline_; // BASELINE start time
+  // Timing / counters
+  rclcpp::Time t_start_;       // APPROACH start time
+  rclcpp::Time t_baseline_;    // BASELINE start time
   int contact_count_{0};
 
   // Baseline accumulation (stationary)
@@ -85,6 +100,9 @@ private:
   double contact_grace_s_{0.25};
   double baseline_window_s_{0.25};
 
+  // -----------------------------
+  // Callbacks
+  // -----------------------------
   void wrench_callback(const geometry_msgs::msg::WrenchStamped::SharedPtr msg)
   {
     if (!msg) return;
@@ -137,12 +155,14 @@ private:
     }
   }
 
-
+  // -----------------------------
+  // Core loop
+  // -----------------------------
   void tick()
   {
     const auto now_t = now();
 
-    // Hard gate: if disabled, always publish zero and stay IDLE
+    // Hard gate: if disabled, always publish zero and stay IDLE.
     if (!haptics_enabled_) {
       publishZero(now_t);
       state_ = State::IDLE;
@@ -155,7 +175,7 @@ private:
       {
         publishZero(now_t);
 
-        // Proceed once PBVS converged and have wrench stream
+        // Only proceed once PBVS says we're converged and we have a live wrench stream
         if (pbvs_converged_) {
           if (!have_wrench_) {
             // wait quietly; do not fault here
@@ -167,6 +187,8 @@ private:
             fault("Wrench stream stale in IDLE (>0.25s).");
             return;
           }
+
+          // NEW: enter BASELINE to measure stationary wrench at the exact APPROACH orientation
           enterBaseline(now_t);
         }
         return;
@@ -271,7 +293,7 @@ private:
           return;
         }
 
-        // Smooth ramp-up from 0 -> v0
+        // Smooth ramp-up from 0 -> v0_ (base speed). No sharp upward edge; no high initial velocity.
         const double v_target = v0_;
         double v = 0.0;
         if (tau_ > 1e-6) {
@@ -282,8 +304,8 @@ private:
         v = std::clamp(v, 0.0, v_target);
 
         // Contact detection:
-        // Force magnitude with a measured baseline added
-        // Ignore contact to avoid start transient false stops
+        // - Uses SAME metric as before (force magnitude) but with a measured baseline added.
+        // - During contact_grace_s_, we ignore contact to avoid start transient false stops.
         if (t < contact_grace_s_) {
           contact_count_ = 0;
         } else {
@@ -330,6 +352,9 @@ private:
     }
   }
 
+  // -----------------------------
+  // Helpers
+  // -----------------------------
   void enterBaseline(const rclcpp::Time& now_t)
   {
     // Reset baseline accumulation
