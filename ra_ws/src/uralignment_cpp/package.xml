@@ -5,7 +5,7 @@
   <version>0.0.0</version>
   <description>Autonomous Alignment to Four AprilTags Creating a Concentric Center as Target for Eye-in-Hand d435iRealSense Mounted to UR16e at Fermilab</description>
   <maintainer email="nickolas.giffen@outlook.com">giffen</maintainer>
-  <license>Apache-2.0</license>
+  <license>GPL-3.0</license>
 
    <!-- Build Dependencies required to build packages -->
   <buildtool_depend>ament_cmake</buildtool_depend> <!-- Build system for building ROS2 packages -->

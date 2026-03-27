@@ -26,6 +26,16 @@ find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(ur_rtde REQUIRED CONFIG)
 
+find_library(REALSENSE2_LIB
+  NAMES realsense2
+  PATHS /opt/ros/jazzy/lib/x86_64-linux-gnu
+  REQUIRED
+)
+message(STATUS "Using librealsense2: ${REALSENSE2_LIB}")
+list(REMOVE_ITEM VISP_LIBRARIES "/usr/lib/x86_64-linux-gnu/librealsense2.so")
+list(REMOVE_ITEM VISP_LIBRARIES "/usr/lib/x86_64-linux-gnu/librealsense2.so.2.56")
+list(REMOVE_ITEM VISP_LIBRARIES "/usr/lib/x86_64-linux-gnu/librealsense2.so.2.56.5")
+
 # Additional required directories:
 include_directories(
   include
@@ -35,39 +45,28 @@ include_directories(
   ${Boost_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR})
 
-# demo_servo #######################################################
-add_executable(demo_servo src/demo_servo.cpp) # Add to build process
-target_link_libraries(demo_servo ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS})
-ament_target_dependencies(demo_servo rclcpp std_msgs sensor_msgs image_transport cv_bridge ament_index_cpp)
-####################################################################
-
 # d435i_camera node ################################################
 add_executable(d435i_camera src/d435i_camera.cpp)
 target_include_directories(d435i_camera PRIVATE include)
-target_link_libraries(d435i_camera ${OpenCV_LIBS} realsense2)
-ament_target_dependencies(d435i_camera rclcpp sensor_msgs std_msgs image_transport cv_bridge)
-####################################################################
-
-# image_subscriber #################################################
-add_executable(image_subscriber src/image_subscriber.cpp)
-ament_target_dependencies(image_subscriber rclcpp sensor_msgs cv_bridge OpenCV)
+target_link_libraries(d435i_camera ${OpenCV_LIBS} ${REALSENSE2_LIB})
+ament_target_dependencies(d435i_camera rclcpp sensor_msgs std_msgs image_transport cv_bridge ament_index_cpp)
 ####################################################################
 
 # apriltags ########################################################
 add_executable(apriltags src/apriltags.cpp) # Add to build process
-target_link_libraries(apriltags ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(apriltags ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS} ${REALSENSE2_LIB})
 ament_target_dependencies(apriltags rclcpp geometry_msgs sensor_msgs tf2 image_transport cv_bridge ament_index_cpp OpenCV)
 ####################################################################
 
 # ur_e_series ######################################################
 add_executable(ur_e_series src/ur_e_series.cpp) # Add to build process
-target_link_libraries(ur_e_series ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(ur_e_series ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS} ${REALSENSE2_LIB})
 ament_target_dependencies(ur_e_series rclcpp std_msgs geometry_msgs sensor_msgs image_transport cv_bridge ament_index_cpp)
 ####################################################################
 
 # displays #########################################################
 add_executable(displays src/displays.cpp) # Add to build process
-target_link_libraries(displays ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(displays ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS} ${REALSENSE2_LIB})
 ament_target_dependencies(displays rclcpp std_msgs sensor_msgs geometry_msgs image_transport cv_bridge ament_index_cpp OpenCV)
 ####################################################################
 
@@ -79,12 +78,7 @@ target_link_libraries(teleop_key PRIVATE rclcpp::rclcpp ${std_msgs_TARGETS})
 # offset ####################################################
 add_executable(offset src/offset.cpp)
 ament_target_dependencies(offset rclcpp std_msgs geometry_msgs)
-#################################################################
-
-# wrench ####################################################
-add_executable(wrench src/wrench.cpp)
-ament_target_dependencies(wrench rclcpp geometry_msgs)
-target_link_libraries(wrench ur_rtde::rtde)
+target_link_libraries(offset ur_rtde::rtde)
 #################################################################
 
 # tracker ##########################################################
@@ -97,15 +91,12 @@ target_compile_features(tracker PUBLIC cxx_std_17)
 
 
 install(TARGETS
-  demo_servo
   d435i_camera
-  image_subscriber
   apriltags
   ur_e_series
   displays
   teleop_key
   offset
-  wrench
   tracker
   DESTINATION lib/${PROJECT_NAME})
 

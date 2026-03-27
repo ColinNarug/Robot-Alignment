@@ -1,0 +1,41 @@
+intrinsics_calib_node:
+  ros__parameters:
+    # Inputs
+    image_topic: /camera/color/image_raw
+
+    # Board: 18x25 squares -> inner corners = 17x24
+    board_cols: 24
+    board_rows: 17
+    square_size_m: 0.0075 # 7.5 mm squares
+
+    # Output naming
+    serial: "327122073214"
+
+    output_dir: "config/intrinsics"
+    mirror_output_dirs:
+      - "install/uralignment_cpp/share/uralignment_cpp/config"
+      - "src/uralignment_cpp/config"
+      - "src/calibration_cpp/config"
+      - "src/uralignment_py/config"
+
+    # UX/perf
+    preview_scale: 0.5
+    gui_period_ms: 33
+
+    # Detection behavior:
+    continuous_detect_hz: 15.0
+    detect_scale: 0.35
+
+    # Detection flags (robust defaults for big boards)
+    use_findChessboardCornersSB: true
+    fast_check: false
+    adaptive_thresh: true
+    normalize_image: true
+
+    refine_corners: true
+    refine_window: 11
+    refine_max_iters: 30
+    refine_eps: 0.1
+
+    # Allow solve any time
+    min_samples_for_solve: 0

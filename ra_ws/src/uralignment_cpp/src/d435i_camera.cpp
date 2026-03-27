@@ -1,15 +1,23 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/core/persistence.hpp>
 #include <librealsense2/rs.hpp>
-
 #include <atomic>
 #include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
+#include <algorithm>
+#include <unordered_set>
+
+namespace fs = std::filesystem;
 
 class D435iCameraNode : public rclcpp::Node
 {
@@ -25,7 +33,11 @@ public:
     qos_depth_       = this->declare_parameter<int>("qos_depth", 1);
     qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "reliable" or "best_effort"
     encoding_        = this->declare_parameter<std::string>("encoding", "bgr8");
-
+    serial_ = this->declare_parameter<std::string>("serial", "");
+    active_camera_filename_ = this->declare_parameter<std::string>("active_camera_filename", "active_camera.yaml");
+    config_subdir_          = this->declare_parameter<std::string>("config_subdir", "config");
+    mirror_packages_ = this->declare_parameter<std::vector<std::string>>(
+      "mirror_packages", std::vector<std::string>{"uralignment_cpp", "calibration_cpp", "uralignment_py"});
     // QoS: for video, prefer best_effort + depth 1 (latest frame wins)
     rclcpp::QoS qos{rclcpp::KeepLast(static_cast<size_t>(std::max(1, qos_depth_)))};
     qos.durability_volatile();
@@ -33,7 +45,7 @@ public:
     else qos.reliable();
 
     pub_ = this->create_publisher<sensor_msgs::msg::Image>("camera/color/image_raw", qos);
-
+    
     // Pre-size message pool
     const size_t nominal_stride = static_cast<size_t>(width_) * 3; // bgr8/rgb8
     const size_t nominal_bytes  = static_cast<size_t>(height_) * nominal_stride;
@@ -50,8 +62,8 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "D435i Camera Node configured. %dx%d @ %d FPS. QoS: %s depth=%d encoding=%s",
-      width_, height_, fps_, qos_reliability_.c_str(), qos_depth_, encoding_.c_str());
+      "D435i Camera Node configured. req=%dx%d @ %d FPS. QoS: %s depth=%d encoding=%s serial=%s",
+      width_, height_, fps_, qos_reliability_.c_str(), qos_depth_, encoding_.c_str(), serial_.c_str());
   }
 
   void start()
@@ -60,14 +72,39 @@ public:
 
     // Start RealSense pipeline
     rs2::config cfg;
+    if (!serial_.empty()) 
+    {
+      cfg.enable_device(serial_);
+    }
     if (encoding_ == "rgb8") {
       cfg.enable_stream(RS2_STREAM_COLOR, width_, height_, RS2_FORMAT_RGB8, fps_);
-    } else {
-      // default
-      cfg.enable_stream(RS2_STREAM_COLOR, width_, height_, RS2_FORMAT_BGR8, fps_);
+    } 
+    else 
+    {
+      cfg.enable_stream(RS2_STREAM_COLOR, width_, height_, RS2_FORMAT_BGR8, fps_); // default
     }
-    pipe_.start(cfg);
+    rs2::pipeline_profile profile = pipe_.start(cfg);
 
+    // Determine actual serial + actual stream size (may differ from requested)
+    try {
+      auto dev = profile.get_device();
+      actual_serial_ = dev.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
+    } catch (...) {
+      actual_serial_.clear();
+    }
+
+    int aw = width_, ah = height_;
+    try {
+      auto sp = profile.get_stream(RS2_STREAM_COLOR).as<rs2::video_stream_profile>();
+      aw = sp.width();
+      ah = sp.height();
+    } catch (...) {}
+
+    RCLCPP_INFO(this->get_logger(),
+      "RealSense active device: actual_serial=%s (param serial=%s), stream=%dx%d, fps=%d",
+      actual_serial_.c_str(), serial_.c_str(), aw, ah, fps_);
+
+    write_active_camera_yaml(actual_serial_, aw, ah);
     capture_thread_ = std::thread(&D435iCameraNode::captureLoop, this);
     publish_thread_ = std::thread(&D435iCameraNode::publishLoop, this);
 
@@ -78,7 +115,7 @@ public:
   {
     bool expected = true;
     if (!running_.compare_exchange_strong(expected, false)) return;
-    // Wake publisher if it is sleeping:
+    // Wake publisher if sleeping:
     {
       std::lock_guard<std::mutex> lk(m_);
       shutting_down_ = true;
@@ -91,7 +128,7 @@ public:
     if (publish_thread_.joinable()) publish_thread_.join();
   }
 
-  ~D435iCameraNode() override { stop(); }
+  ~D435iCameraNode() override { stop(); } // Begin d435i camera node
 
 private:
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_;
@@ -109,6 +146,12 @@ private:
   int qos_depth_{1};
   std::string qos_reliability_{"best_effort"};
   std::string encoding_{"bgr8"};
+  std::string serial_;
+  std::string actual_serial_;
+
+  std::string active_camera_filename_{"active_camera.yaml"};
+  std::string config_subdir_{"config"};
+  std::vector<std::string> mirror_packages_;
 
   // 3-slot pool to allow capture+publish overlap
   static constexpr size_t kPoolSize = 3;
@@ -118,7 +161,7 @@ private:
   std::array<sensor_msgs::msg::Image, kPoolSize> pool_;
   std::array<SlotState, kPoolSize> state_{
     SlotState::FREE, SlotState::FREE, SlotState::FREE
-  };
+    };
 
   std::mutex m_;
   std::condition_variable cv_;
@@ -126,6 +169,115 @@ private:
   size_t latest_ready_idx_{0};
   bool has_ready_{false};
 
+  // Active-camera YAML. Derive the workspace root by trimming the install path off a package share path
+  static std::string infer_workspace_root_from_share(const std::string& share_dir) 
+  {
+    const std::string needle = "/install/";
+    const auto pos = share_dir.find(needle);
+    if (pos == std::string::npos) return "";
+    return share_dir.substr(0, pos);
+  }
+
+  // Deduplicate directory strings while preserving order
+  std::vector<std::string> unique_dirs_(const std::vector<std::string>& in) const
+  {
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    out.reserve(in.size());
+    for (const auto& s : in) 
+    {
+      if (s.empty()) continue;
+      if (seen.insert(s).second) out.push_back(s);
+    }
+    return out;
+  }
+
+  // Build the list of congiruation directories that should get active_camera.yaml
+  std::vector<std::string> compute_active_camera_target_dirs() const
+  {
+    std::vector<std::string> dirs;
+
+    // Always write to each package's install/share config dir (runtime-safe)
+    for (const auto& pkg : mirror_packages_) 
+    {
+      try 
+      {
+        const std::string share = ament_index_cpp::get_package_share_directory(pkg);
+        dirs.push_back(share + "/" + config_subdir_);
+      } 
+      catch (...) {}
+    }
+
+    // Also write to workspace-visible locations
+    std::string ws_root;
+    try {
+      const std::string share = ament_index_cpp::get_package_share_directory("uralignment_cpp");
+      ws_root = infer_workspace_root_from_share(share);
+    } catch (...) {}
+
+    if (!ws_root.empty()) {
+      dirs.push_back(ws_root + "/config");
+      for (const auto& pkg : mirror_packages_) {
+        dirs.push_back(ws_root + "/src/" + pkg + "/" + config_subdir_);
+        dirs.push_back(ws_root + "/install/" + pkg + "/share/" + pkg + "/" + config_subdir_);
+      }
+    }
+
+    return unique_dirs_(dirs);
+  }
+
+  // Write active camera serial and resolution
+  bool write_active_camera_yaml(const std::string& serial, int w, int h)
+  {
+    if (serial.empty()) {
+      RCLCPP_WARN(this->get_logger(),
+        "Active camera serial is empty; active_camera.yaml will still be written but other nodes may not resolve intrinsics filenames.");
+    }
+
+    const auto dirs = compute_active_camera_target_dirs();
+    if (dirs.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "No target directories available to write %s.", active_camera_filename_.c_str());
+      return false;
+    }
+
+    bool any_ok = false;
+    for (const auto& dir : dirs)
+    {
+      try {
+        fs::create_directories(dir);
+        const std::string path = dir + "/" + active_camera_filename_;
+
+        cv::FileStorage fsw(path, cv::FileStorage::WRITE | cv::FileStorage::FORMAT_YAML);
+        if (!fsw.isOpened()) {
+          RCLCPP_WARN(this->get_logger(), "Could not open for write: %s", path.c_str());
+          continue;
+        }
+
+        fsw << "serial" << serial;
+        fsw << "width"  << w;
+        fsw << "height" << h;
+        fsw.release();
+
+        any_ok = true;
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(this->get_logger(), "Failed writing active_camera.yaml to %s: %s", dir.c_str(), e.what());
+      } catch (...) {
+        RCLCPP_WARN(this->get_logger(), "Failed writing active_camera.yaml to %s: unknown error", dir.c_str());
+      }
+    }
+
+    if (any_ok) {
+      RCLCPP_INFO(this->get_logger(),
+        "Wrote %s (serial=%s, %dx%d) to %zu config locations.",
+        active_camera_filename_.c_str(), serial.c_str(), w, h, dirs.size());
+    } else {
+      RCLCPP_ERROR(this->get_logger(),
+        "Failed to write %s to any target location.", active_camera_filename_.c_str());
+    }
+    return any_ok;
+  }
+
+  // Pull frames from the RealSense pipline and fill free slots
   void captureLoop()
   {
     while (rclcpp::ok() && running_.load())
@@ -178,10 +330,11 @@ private:
         cv_.notify_one();
       }
       catch (const rs2::error&) { if (!running_.load()) break; }
-      catch (...)             { if (!running_.load()) break; }
+      catch (...) { if (!running_.load()) break; }
     }
   }
 
+  // Publish the newest available image frame
   void publishLoop()
   {
     while (rclcpp::ok() && running_.load())
@@ -217,7 +370,6 @@ private:
         has_ready_ = anyReadyUnsafe();
       }
 
-      // Publish outside the lock
       pub_->publish(pool_[idx]);
 
       // Free the slot
@@ -229,11 +381,13 @@ private:
     }
   }
 
+  // Scan the slot state for any ready entry while the mutex is already held
   bool anyReadyUnsafe() const
   {
     for (auto s : state_) if (s == SlotState::READY) return true;
     return false;
   }
+
 };
 
 int main(int argc, char** argv)

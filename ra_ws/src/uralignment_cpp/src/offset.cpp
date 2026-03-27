@@ -5,6 +5,12 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <cmath>
 #include <algorithm>
+#include <ur_rtde/rtde_receive_interface.h> // from ur_rtde
+#include <chrono>
+#include <memory>
+#include <string>
+#include <vector>
+#include <mutex>
 
 using namespace std::chrono_literals;
 
@@ -13,41 +19,57 @@ class OffsetNode : public rclcpp::Node
 public:
   OffsetNode() : Node("offset_node")
   {
-
-    f_contact_        = declare_parameter<double>("f_contact", 10.0); // N 
-    debounce_n_       = declare_parameter<int>("debounce_n", 25); // threshold
+    // Parameters
+    f_contact_        = declare_parameter<double>("f_contact", 5.0); // N 
+    debounce_n_       = declare_parameter<int>("debounce_n", 6); // threshold
     v0_               = declare_parameter<double>("v0", 0.003); // m/s
     vmin_             = declare_parameter<double>("vmin", 0.001); // m/s
     tau_              = declare_parameter<double>("tau", 1.0); // s
-    timeout_s_        = declare_parameter<double>("approach_timeout_s", 30.0); // s
-
+    timeout_s_        = declare_parameter<double>("approach_timeout_s", 180.0); // s
     contact_grace_s_  = declare_parameter<double>("contact_grace_s", 0.25); // s
-
     baseline_window_s_ = declare_parameter<double>("baseline_window_s", 0.25); // s
 
+    //Callback Groups:
+    wrench_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // wrench only
+    offset_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // tick & key
+    rclcpp::SubscriptionOptions offset_opts;
+    offset_opts.callback_group = offset_handling_;
+
+    constexpr const char* ROBOT_IP = "192.168.1.101";
+    try 
+    {
+      rtde_ = std::make_unique<ur_rtde::RTDEReceiveInterface>(ROBOT_IP, 125.0);
+    }
+    catch (const std::exception& e)
+    {
+      RCLCPP_FATAL(this->get_logger(), "RTDE connection failed to %s: %s", ROBOT_IP, e.what());
+      throw;
+    }
+
+    // Convergence Bool Subscription:
     sub_conv_ = create_subscription<std_msgs::msg::Bool>(
       "/pbvs/converged", 10,
-      [&](std_msgs::msg::Bool::SharedPtr msg) {
+      [&](std_msgs::msg::Bool::SharedPtr msg) 
+      {
         if (!msg) return;
         pbvs_converged_ = msg->data;
-      });
+      }, offset_opts);
 
     // Key subscription (latched)
     rclcpp::QoS key_qos(1);
     key_qos.reliable().transient_local();
     sub_key_ = create_subscription<std_msgs::msg::Char>(
       "/teleop/last_key", key_qos,
-      std::bind(&OffsetNode::key_callback, this, std::placeholders::_1));
+      std::bind(&OffsetNode::key_callback, this, std::placeholders::_1), offset_opts);
 
-    sub_wrench_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-      "/ur/tcp_wrench", rclcpp::SensorDataQoS(),
-      std::bind(&OffsetNode::wrench_callback, this, std::placeholders::_1));
+    // Publish Force/Torque from RTDE
+    pub_twist_ = create_publisher<geometry_msgs::msg::TwistStamped>("/offset/cmd_twist", rclcpp::SensorDataQoS());
 
-    pub_twist_ = create_publisher<geometry_msgs::msg::TwistStamped>(
-      "/offset/cmd_twist_cf", rclcpp::SensorDataQoS());
+    // Create timers for callback groups
+    wrench_timer_ = this->create_wall_timer(8ms, std::bind(&OffsetNode::wrench_callback, this), wrench_handling_); // ~125Hz
+    offset_timer_ = this->create_wall_timer(8ms, std::bind(&OffsetNode::tick, this), offset_handling_); // ~125Hz
 
-    timer_ = create_wall_timer(8ms, std::bind(&OffsetNode::tick, this)); // ~125Hz
-
+    RCLCPP_INFO(this->get_logger(), "wrench started. RTDE (robot_ip=%s)", ROBOT_IP);
     RCLCPP_INFO(get_logger(), "Offset node ready. Press X to enable approach; Space to disable.");
   }
 
@@ -55,11 +77,13 @@ private:
   enum class State { IDLE, BASELINE, APPROACH, DONE, FAULT };
   State state_{State::IDLE};
 
+  rclcpp::CallbackGroup::SharedPtr wrench_handling_, offset_handling_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_conv_;
   rclcpp::Subscription<std_msgs::msg::Char>::SharedPtr sub_key_;
-  rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr sub_wrench_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub_twist_;
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr wrench_timer_, offset_timer_;
+  std::unique_ptr<ur_rtde::RTDEReceiveInterface> rtde_;
+  mutable std::mutex wrench_mtx_;
 
   bool pbvs_converged_{false};
   bool haptics_enabled_{false}; // require X to run
@@ -67,41 +91,70 @@ private:
   bool printed_first_wrench_{false};
   geometry_msgs::msg::WrenchStamped last_wrench_;
   rclcpp::Time last_wrench_rx_time_;
-
-  rclcpp::Time t_start_;  // APPROACH start time
+  rclcpp::Time t_start_; // APPROACH start time
   rclcpp::Time t_baseline_; // BASELINE start time
   int contact_count_{0};
-
-  // Baseline accumulation (stationary)
+  // Baseline accumulation (stationary):
   bool baseline_valid_{false};
   int baseline_n_{0};
   double baseline_sum_fx_{0.0}, baseline_sum_fy_{0.0}, baseline_sum_fz_{0.0}, baseline_sum_fmag_{0.0};
   double baseline_fx_{0.0}, baseline_fy_{0.0}, baseline_fz_{0.0}, baseline_fmag_{0.0};
 
   // Params
-  double f_contact_{10.0};
-  int debounce_n_{25};
+  double f_contact_{5.0};
+  int debounce_n_{6};
   double v0_{0.003}, vmin_{0.001}, tau_{1.0}, timeout_s_{30.0};
   double contact_grace_s_{0.25};
   double baseline_window_s_{0.25};
 
-  void wrench_callback(const geometry_msgs::msg::WrenchStamped::SharedPtr msg)
+  void wrench_callback() // Get F/T from RTDE and store it
   {
-    if (!msg) return;
-
-    if (!printed_first_wrench_) {
-      printed_first_wrench_ = true;
-      RCLCPP_INFO(get_logger(),
-        "First wrench received on /ur/tcp_wrench. frame_id='%s'",
-        msg->header.frame_id.c_str());
+    // Returns [Fx, Fy, Fz, Tx, Ty, Tz]
+    const std::vector<double> w = rtde_->getActualTCPForce();
+    if (w.size() != 6)
+    {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "RTDE wrench vector size != 6 (actual: %zu)", w.size());
+      return;
     }
 
-    last_wrench_ = *msg;
-    last_wrench_rx_time_ = now();
-    have_wrench_ = true;
+    std::string frame_id_copy;
+    {
+      std::lock_guard<std::mutex> lk(wrench_mtx_);
+
+      // Receipt timestamp
+      const rclcpp::Time stamp = this->get_clock()->now();
+      last_wrench_rx_time_ = stamp;
+
+      // Header stamp
+      const int64_t ns = stamp.nanoseconds();
+      last_wrench_.header.stamp.sec     = static_cast<int32_t>(ns / 1000000000LL);
+      last_wrench_.header.stamp.nanosec = static_cast<uint32_t>(ns % 1000000000LL);
+
+      // Identify the frame (UR reports wrench at TCP; conventionally treat as base-frame)
+      last_wrench_.header.frame_id = "base";
+
+      // Store force/torque values
+      last_wrench_.wrench.force.x  = w[0];
+      last_wrench_.wrench.force.y  = w[1];
+      last_wrench_.wrench.force.z  = w[2];
+      last_wrench_.wrench.torque.x = w[3];
+      last_wrench_.wrench.torque.y = w[4];
+      last_wrench_.wrench.torque.z = w[5];
+
+      have_wrench_ = true;
+      frame_id_copy = last_wrench_.header.frame_id;
+    }
+
+    if (!printed_first_wrench_)
+    {
+      printed_first_wrench_ = true;
+      RCLCPP_INFO(this->get_logger(),
+        "First RTDE wrench received. frame_id='%s'", frame_id_copy.c_str());
+    }
   }
 
-  void key_callback(const std_msgs::msg::Char::SharedPtr msg)
+  void key_callback(const std_msgs::msg::Char::SharedPtr msg) // Check the TUI commands
   {
     if (!msg) return;
     const char k = static_cast<char>(msg->data);
@@ -137,10 +190,20 @@ private:
     }
   }
 
-
+  // Run node states and publish velocity commands for robot node
   void tick()
   {
     const auto now_t = now();
+    geometry_msgs::msg::WrenchStamped wrench;
+    rclcpp::Time wrench_time;
+    bool have_wrench_snap = false;
+
+    {
+      std::lock_guard<std::mutex> lk(wrench_mtx_);
+      wrench = last_wrench_;
+      wrench_time = last_wrench_rx_time_;
+      have_wrench_snap = have_wrench_;
+    }
 
     // Hard gate: if disabled, always publish zero and stay IDLE
     if (!haptics_enabled_) {
@@ -157,14 +220,13 @@ private:
 
         // Proceed once PBVS converged and have wrench stream
         if (pbvs_converged_) {
-          if (!have_wrench_) {
-            // wait quietly; do not fault here
+          if (!have_wrench_snap) {
             return;
           }
 
-          const double wrench_age_s = (now_t - last_wrench_rx_time_).seconds();
-          if (wrench_age_s > 0.25) {
-            fault("Wrench stream stale in IDLE (>0.25s).");
+          const double wrench_age_s = (now_t - wrench_time).seconds();
+          if (wrench_age_s > 0.1) {
+            fault("Wrench stream stale in IDLE (>0.1s).");
             return;
           }
           enterBaseline(now_t);
@@ -185,19 +247,18 @@ private:
           return;
         }
 
-        if (!have_wrench_) {
+        if (!have_wrench_snap) {
           fault("No wrench received during BASELINE.");
           return;
         }
 
-        const double wrench_age_s = (now_t - last_wrench_rx_time_).seconds();
+        const double wrench_age_s = (now_t - wrench_time).seconds();
         if (wrench_age_s > 0.25) {
           fault("Wrench stream stale during BASELINE (>0.25s).");
           return;
         }
 
-        // Accumulate baseline samples
-        const auto & f = last_wrench_.wrench.force;
+        const auto & f = wrench.wrench.force;
         const double fx = f.x;
         const double fy = f.y;
         const double fz = f.z;
@@ -247,29 +308,24 @@ private:
           return;
         }
 
-        if (!have_wrench_) {
-          // small grace at very beginning in case stream arrives slightly late
+        if (!have_wrench_snap) {
           if ((now_t - t_start_).seconds() < 0.5) {
             publishZero(now_t);
             return;
+            
           }
           fault("No wrench received.");
           return;
         }
 
-        // Stale wrench stream check
-        const double wrench_age_s = (now_t - last_wrench_rx_time_).seconds();
-        if (wrench_age_s > 0.25) {
+        const double wrench_age_s = (now_t - wrench_time).seconds();
+        if (wrench_age_s > 0.25) 
+        {
           fault("Wrench stream stale (>0.25s).");
           return;
         }
 
-        // Timeout check
         const double t = (now_t - t_start_).seconds();
-        if (t > timeout_s_) {
-          fault("Approach timeout.");
-          return;
-        }
 
         // Smooth ramp-up from 0 -> v0
         const double v_target = v0_;
@@ -281,13 +337,11 @@ private:
         }
         v = std::clamp(v, 0.0, v_target);
 
-        // Contact detection:
-        // Force magnitude with a measured baseline added
         // Ignore contact to avoid start transient false stops
         if (t < contact_grace_s_) {
           contact_count_ = 0;
         } else {
-          const auto & f = last_wrench_.wrench.force;
+          const auto & f = wrench.wrench.force;
           const double fx = f.x;
           const double fy = f.y;
           const double fz = f.z;
@@ -366,7 +420,9 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<OffsetNode>();
-  rclcpp::spin(node);
+  rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+  exec.add_node(node);
+  exec.spin();
   rclcpp::shutdown();
   return 0;
 }

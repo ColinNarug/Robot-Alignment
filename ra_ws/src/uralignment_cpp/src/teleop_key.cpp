@@ -8,10 +8,10 @@
 #include <std_msgs/msg/char.hpp>
 
 #ifdef _WIN32
-# include <windows.h>  // NO LINT
+# include <windows.h> // NO LINT
 #else
-# include <termios.h>  // NO LINT
-# include <unistd.h>   // NO LINT
+# include <termios.h> // NO LINT
+# include <unistd.h> // NO LINT
 #endif
 
 // Keys
@@ -26,13 +26,13 @@ static std::atomic<char> running{true};
 class KeyboardReader final 
 {
 public:
-  KeyboardReader() 
+  KeyboardReader() // Construct the keyboard reader and place the terminal into raw mode when needed
   {
     #ifdef _WIN32
       hstdin_ = GetStdHandle(STD_INPUT_HANDLE);
       if (hstdin_ == INVALID_HANDLE_VALUE) throw std::runtime_error("Failed to get stdin handle");
       if (!GetConsoleMode(hstdin_, &old_mode_)) throw std::runtime_error("Failed to get console mode");
-      DWORD new_mode = ENABLE_PROCESSED_INPUT;  // Ctrl-C processing
+      DWORD new_mode = ENABLE_PROCESSED_INPUT;
       if (!SetConsoleMode(hstdin_, new_mode)) throw std::runtime_error("Failed to set console mode");
     #else
       if (tcgetattr(0, &cooked_) < 0) throw std::runtime_error("Failed to get console mode");
@@ -47,7 +47,7 @@ public:
       #endif
   }
 
-  char readOne() 
+  char readOne() // Read one keyboard event
   {
     char c = 0;
     #ifdef _WIN32
@@ -75,7 +75,7 @@ public:
       return c;
   }
 
-  ~KeyboardReader() 
+  ~KeyboardReader() // Begin keyboard reader
   {
     #ifdef _WIN32
       SetConsoleMode(hstdin_, old_mode_);
@@ -101,9 +101,8 @@ public:
     // Parameters
     node_->declare_parameter<std::string>("key_topic", "/teleop/last_key");
 
-    rclcpp::QoS qos(1);    // QoS: keep last message for late-joiners
+    rclcpp::QoS qos(1); // QoS: keep last message for late-joiners
     qos.reliable().transient_local();
-
     std::string topic = node_->get_parameter("key_topic").as_string();
     key_pub_ = node_->create_publisher<std_msgs::msg::Char>(topic, qos);
 
@@ -113,7 +112,7 @@ public:
     std::thread{[this](){ rclcpp::spin(node_); }}.detach();
   }
 
-  int keyLoop() 
+  int keyLoop() // Print how-to-use in terminal and publish key-presses to topic
   {
     puts("---------------------------");
     puts("Control the Robot!");
@@ -148,7 +147,7 @@ public:
         case KEYCODE_q:
         case KEYCODE_Q:
         case 0x1B: // Esc
-          publish_key(c == 0x1B ? 0x1B : 'Q');  // normalize ok either way
+          publish_key(c == 0x1B ? 0x1B : 'Q'); // normalize ok either way
           rclcpp::sleep_for(std::chrono::seconds(1));
           running.store(false);
           break;
@@ -162,7 +161,7 @@ public:
   }
 
 private:
-  void publish_key(char k) 
+  void publish_key(char k) // Publish
   {
     last_key_ = k;
     std_msgs::msg::Char m;
@@ -171,12 +170,10 @@ private:
     RCLCPP_INFO(node_->get_logger(), "last_key = 0x%02X ('%c')", (int)last_key_, (last_key_ ? last_key_ : ' '));
   }
 
-
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<std_msgs::msg::Char>::SharedPtr key_pub_;
   KeyboardReader input_;
   char last_key_= ' '; 
-
 };
 
 #ifdef _WIN32

@@ -1,3 +1,11 @@
+/*
+This node was from a 2 node structure with the d435i_camera node. 
+*/
+
+
+
+
+
 #include <visp3/core/vpConfig.h>
 #ifdef VISP_HAVE_MODULE_SENSOR
 #include <visp3/sensor/vpRealSense2.h>

@@ -1,7 +1,13 @@
 %YAML:1.0
 ---
-type: perspectiveProjWithoutDistortion
-px: 907.7258031
-py: 906.8582153
-u0: 657.2998502
-v0: 358.9750977
+distortion_model: plumb_bob
+camera_matrix: !!opencv-matrix
+  rows: 3
+  cols: 3
+  dt: d
+  data: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+distortion_coefficients: !!opencv-matrix
+  rows: 1
+  cols: 5
+  dt: d
+  data: [k1, k2, p1, p2, k3]

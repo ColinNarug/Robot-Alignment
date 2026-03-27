@@ -5,20 +5,23 @@
 #include <visp3/core/vpImageConvert.h>
 #include <visp3/core/vpCameraParameters.h>
 #include <visp3/gui/vpPlot.h>
-#include <string>                    // String Operations
-#include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
-#include "sensor_msgs/msg/image.hpp" // ROS2 Image Message
+#include <string>
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/image_encodings.hpp"
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
 #include <cmath>
 #include <Eigen/Geometry>
-#include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/tf2/LinearMath/Matrix3x3.h>
 #include <mutex>
 #include <cstring>
+#include <filesystem>
+#include <algorithm>
+#include <stdexcept>
 
 //! [Macro defined]
 #if defined(VISP_HAVE_APRILTAG) && defined(VISP_HAVE_REALSENSE2) && defined(VISP_HAVE_UR_RTDE) && VISP_NAMESPACE_NAME
@@ -26,12 +29,113 @@
 using namespace VISP_NAMESPACE_NAME;
 #endif
 
+namespace fs = std::filesystem;
+
+struct ActiveCameraInfo // Declare for grouping related data
+{
+  std::string serial;
+  int width{0};
+  int height{0};
+  bool valid() const { return !serial.empty() && width > 0 && height > 0; }
+};
+
+// Derive the workspace root by trimming the install pack off a package share path
+static std::string infer_workspace_root_from_share(const std::string& share_dir)
+{
+  const std::string needle = "/install/";
+  const auto pos = share_dir.find(needle);
+  if (pos == std::string::npos) return "";
+  return share_dir.substr(0, pos);
+}
+
+// Construct candidate configuraton directories across install and source mirrors
+static std::vector<std::string> compute_candidate_config_dirs()
+{
+  std::vector<std::string> dirs;
+
+  for (const auto& pkg : std::vector<std::string>{"uralignment_cpp", "calibration_cpp", "uralignment_py"})
+  {
+    try
+    {
+      const std::string share = ament_index_cpp::get_package_share_directory(pkg);
+      dirs.push_back(share + "/config");
+    }
+    catch (...) {}
+  }
+
+  std::string ws_root;
+  try
+  {
+    const std::string share = ament_index_cpp::get_package_share_directory("uralignment_cpp");
+    ws_root = infer_workspace_root_from_share(share);
+  }
+  catch (...) {}
+
+  if (!ws_root.empty())
+  {
+    dirs.push_back(ws_root + "/config");
+    dirs.push_back(ws_root + "/config/intrinsics");
+    dirs.push_back(ws_root + "/src/uralignment_cpp/config");
+    dirs.push_back(ws_root + "/src/calibration_cpp/config");
+    dirs.push_back(ws_root + "/src/uralignment_py/config");
+    dirs.push_back(ws_root + "/install/uralignment_cpp/share/uralignment_cpp/config");
+    dirs.push_back(ws_root + "/install/calibration_cpp/share/calibration_cpp/config");
+    dirs.push_back(ws_root + "/install/uralignment_py/share/uralignment_py/config");
+  }
+
+  std::vector<std::string> uniq;
+  for (const auto& d : dirs)
+  {
+    if (!d.empty() && std::find(uniq.begin(), uniq.end(), d) == uniq.end())
+      uniq.push_back(d);
+  }
+  return uniq;
+}
+
+// Return the first directory entry containing the requested file name
+static std::string find_first_existing(const std::vector<std::string>& dirs, const std::string& filename)
+{
+  for (const auto& d : dirs)
+  {
+    const std::string p = d + "/" + filename;
+    if (fs::exists(p)) return p;
+  }
+  return "";
+}
+
+// Read YAML (active_camera.yaml) for serial and resolution
+static bool read_active_camera_yaml(const std::string& path, ActiveCameraInfo& out)
+{
+  cv::FileStorage fsr(path, cv::FileStorage::READ);
+  if (!fsr.isOpened()) return false;
+
+  fsr["serial"] >> out.serial;
+  fsr["width"]  >> out.width;
+  fsr["height"] >> out.height;
+  return out.valid();
+}
+
+// Read camera instrinsics and distortion coefficients from YAML
+static bool read_intrinsics_yaml(const std::string& path, cv::Mat& K, cv::Mat& D)
+{
+  cv::FileStorage fsr(path, cv::FileStorage::READ);
+  if (!fsr.isOpened()) return false;
+
+  if (!fsr["camera_matrix"].empty()) fsr["camera_matrix"] >> K;
+  if (K.empty() && !fsr["K"].empty()) fsr["K"] >> K;
+
+  if (!fsr["distortion_coefficients"].empty()) fsr["distortion_coefficients"] >> D;
+  if (D.empty() && !fsr["D"].empty()) fsr["D"] >> D;
+
+  return (K.rows == 3 && K.cols == 3);
+}
+
 class AprilTagNode : public rclcpp::Node
 {
 public:
   AprilTagNode() : Node("apriltag_node")
   {
-
+    // Callback Groups:
     image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions cam_opts;
     cam_opts.callback_group = image_handling_;
@@ -42,11 +146,12 @@ public:
     width_ = declare_parameter<int>("width",1920);
     height_ = declare_parameter<int>("height",1080);
     fps_ = declare_parameter<int>("fps",30);
+    active_camera_filename_ = this->declare_parameter<std::string>("active_camera_filename", "active_camera.yaml");
     // QoS controls 
     qos_depth_ = this->declare_parameter<int>("qos_depth", 1);
     qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "best_effort" or "reliable"
     // Encoding
-    preferred_encoding_ = this->declare_parameter<std::string>("preferred_encoding", "bgr8");  // "bgr8" or "rgb8"
+    preferred_encoding_ = this->declare_parameter<std::string>("preferred_encoding", "bgr8"); // "bgr8" or "rgb8"
     // AprilTag threads
     nThreads = this->declare_parameter<int>("apriltag_threads", 2);
     // QoS
@@ -72,6 +177,11 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_; // Declare shared pointer to subscription
   rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr cMo_; // Declare shared pointer to publication
   sensor_msgs::msg::Image::ConstSharedPtr latest_image_;
+  std::string active_camera_filename_{"active_camera.yaml"};
+  ActiveCameraInfo active_;
+  std::string active_camera_path_;
+  std::string intrinsics_path_;
+  bool have_cam_model_{false};
 
   // Params
   int width_{1920};
@@ -81,7 +191,7 @@ private:
   std::string qos_reliability_{"best_effort"};
   std::string preferred_encoding_{"bgr8"};
   
-  double tagSize = 0.0221;
+  double tagSize = 0.0221; // Black Square of the AprilTags
   float quad_decimate = 1.0;
   int nThreads = 1;
   bool display_tag = false;
@@ -89,8 +199,8 @@ private:
   unsigned int thickness = 2;
   bool align_frame = false;
   vpCameraParameters cam;
-  vpTranslationVector t;   // (tx, ty, tz)
-  vpRotationMatrix  R;     // 3x3 rotation
+  vpTranslationVector t; // (tx, ty, tz)
+  vpRotationMatrix  R; // 3x3 rotation
   vpDetectorAprilTag::vpAprilTagFamily tagFamily = vpDetectorAprilTag::TAG_36h11;
   vpDetectorAprilTag::vpPoseEstimationMethod poseEstimationMethod = vpDetectorAprilTag::HOMOGRAPHY_VIRTUAL_VS;
   //! [Create AprilTag detector]
@@ -99,25 +209,20 @@ private:
   std::map<int, int> tags_index;
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
 
-  // Define ViSP image buffers matching RealSense camera resolution:
-  vpImage<unsigned char> I;
-
+  vpImage<unsigned char> I; // Define ViSP image buffers matching RealSense camera resolution
   std::vector<vpColVector> trackedHoles;
   std::vector<bool> detectedMask;
   std::vector<vpColVector> filteredModelHoles, filteredTrackedHoles;
   // Model definition:
   std::vector<vpColVector> modelHoles;
-
   std::vector<vpHomogeneousMatrix> cMo_vec;
   vpHomogeneousMatrix cMo;
-
   std::mutex img_mtx_;
   bool have_img_{false};
 
-
   void initialization()
   {
-    I.resize(height_, width_); // Grayscale
+    I.resize(height_, width_);
 
     trackedHoles.resize(4);
     detectedMask.resize(4, false);
@@ -135,13 +240,11 @@ private:
     modelHoles[1] = {0.0, 0.06512, 0.0};
     modelHoles[2] = {-0.06512, 0.0, 0.0};
     modelHoles[3] = {0.0, -0.06512, 0.0};
-    // Camera Intrinsics:
-    cam.initPersProjWithoutDistortion(  //diplays
-      907.7258031, // px - Focal Length
-      906.8582153, // py - Focal Length
-      657.2998502, // u0 - Princicple Point
-      358.9750977  // v0 - Principle Point
-    );
+
+    if (!load_active_camera_and_intrinsics_once())
+    {
+      throw std::runtime_error("Failed to load active camera / intrinsics YAML at startup.");
+    }
     //! [AprilTag detector settings]
     detector = vpDetectorAprilTag(tagFamily);
     detector.setAprilTagQuadDecimate(quad_decimate);
@@ -152,11 +255,10 @@ private:
     //! [AprilTag detector settings]
 
     tags_index.clear();
-    tags_index[1] = 1; // blue up
-    tags_index[2] = 2; // white left
-    tags_index[3] = 3; // brown down
-    tags_index[4] = 0; // black right
-
+    tags_index[1] = 1;
+    tags_index[2] = 2;
+    tags_index[3] = 3;
+    tags_index[4] = 0; 
 
     std::cout << "poseEstimationMethod: " << poseEstimationMethod << std::endl;
     std::cout << "tagFamily: " << tagFamily << std::endl;
@@ -164,7 +266,61 @@ private:
     std::cout << "Z aligned: " << align_frame << std::endl;
   }
 
-  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+  bool load_active_camera_and_intrinsics_once() // Load active camera intrinsics once at startup
+  {
+    const auto dirs = compute_candidate_config_dirs();
+
+    const std::string ac_path = find_first_existing(dirs, active_camera_filename_);
+    if (ac_path.empty())
+    {
+      RCLCPP_ERROR(this->get_logger(), "Could not find %s", active_camera_filename_.c_str());
+      return false;
+    }
+
+    ActiveCameraInfo ac;
+    if (!read_active_camera_yaml(ac_path, ac))
+    {
+      RCLCPP_ERROR(this->get_logger(), "Failed to read %s", ac_path.c_str());
+      return false;
+    }
+
+    const std::string intrinsics_fname =
+      ac.serial + "_" + std::to_string(ac.width) + "x" + std::to_string(ac.height) + "_intrinsics.yaml";
+
+    const std::string intr_path = find_first_existing(dirs, intrinsics_fname);
+    if (intr_path.empty())
+    {
+      RCLCPP_ERROR(this->get_logger(), "Could not find matching intrinsics file: %s", intrinsics_fname.c_str());
+      return false;
+    }
+
+    cv::Mat K, D;
+    if (!read_intrinsics_yaml(intr_path, K, D))
+    {
+      RCLCPP_ERROR(this->get_logger(), "Failed to read intrinsics YAML: %s", intr_path.c_str());
+      return false;
+    }
+
+    cam.initPersProjWithoutDistortion(
+      K.at<double>(0,0),
+      K.at<double>(1,1),
+      K.at<double>(0,2),
+      K.at<double>(1,2)
+    );
+
+    active_ = ac;
+    active_camera_path_ = ac_path;
+    intrinsics_path_ = intr_path;
+    have_cam_model_ = true;
+
+    RCLCPP_INFO(this->get_logger(),
+      "Loaded active camera intrinsics: serial=%s %dx%d | %s",
+      active_.serial.c_str(), active_.width, active_.height, intrinsics_path_.c_str());
+
+    return true;
+  }
+
+  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) // Save msg as latest_image_
   {
     if (!msg) return;
     std::scoped_lock lk(img_mtx_);
@@ -172,11 +328,11 @@ private:
     have_img_ = true;
   }
 
-  void apriltag_loop()
+  void apriltag_loop() // Find AprilTags concentric center and publish to topic
   {
       sensor_msgs::msg::Image::ConstSharedPtr img;
       {
-        std::scoped_lock lk(img_mtx_);
+        std::scoped_lock lk(img_mtx_); // Protect shared data
         if (!have_img_ || !latest_image_) return;
         img = latest_image_;
       }
@@ -197,7 +353,7 @@ private:
       const cv::Mat &mat = cv_ptr->image;
       if (mat.empty()) return;
 
-      cv::Mat gray;
+      cv::Mat gray; // Declare to store grayscale image
       if (mat.channels() == 1) gray = mat;
       else
       {
@@ -222,21 +378,34 @@ private:
 
       filteredModelHoles.clear();
       filteredTrackedHoles.clear();
-      if (cMo_vec.size() >= 3 && cMo_vec.size() <= 4)
+      std::fill(detectedMask.begin(), detectedMask.end(), false);
+
+      if (cMo_vec.size() >= 3 && cMo_vec.size() <= 4 && tags_id.size() == cMo_vec.size())
       {
         for (size_t i = 0; i < cMo_vec.size(); i++)
         {
           vpTranslationVector t;
           cMo_vec[i].extract(t);
 
-          int modelIndex = tags_index[tags_id[i]];
-          trackedHoles[modelIndex] = {t[0], t[1], t[2]}; // routine
+          auto it = tags_index.find(tags_id[i]);
+          if (it == tags_index.end())
+          {
+            continue; // ignore unknown tag IDs
+          }
+
+          int modelIndex = it->second;
+          trackedHoles[modelIndex] = {t[0], t[1], t[2]};
           detectedMask[modelIndex] = true;
 
-          // Push the corresponding model and tracked holes into filtered vectors:
           filteredModelHoles.push_back(modelHoles[modelIndex]);
           filteredTrackedHoles.push_back(trackedHoles[modelIndex]);
         }
+
+        if (filteredModelHoles.size() < 3)
+        {
+          return;
+        }
+
         // Passes the filtered vectors to findPose:
         cMo = findPose(filteredModelHoles, filteredTrackedHoles);
         if (cMo == vpHomogeneousMatrix())
@@ -266,9 +435,9 @@ private:
 
         // Build TransformStamped
         geometry_msgs::msg::TransformStamped tf_msg;
-        tf_msg.header.stamp = this->get_clock()->now();
+        tf_msg.header.stamp = img->header.stamp;
         tf_msg.header.frame_id = "camera_frame";
-        tf_msg.child_frame_id  = "apriltag";
+        tf_msg.child_frame_id = "apriltag";
         tf_msg.transform.translation.x = t[0];
         tf_msg.transform.translation.y = t[1];
         tf_msg.transform.translation.z = t[2];
@@ -276,8 +445,6 @@ private:
         tf_msg.transform.rotation.y = q.y();
         tf_msg.transform.rotation.z = q.z();
         tf_msg.transform.rotation.w = q.w();
-
-        // Publish
         cMo_->publish(tf_msg);
       }
     
@@ -330,7 +497,7 @@ private:
 
   return A;
 }
-  // VisP wrapper
+  // ViSP wrapper
   vpHomogeneousMatrix findPose(std::vector<vpColVector> in, std::vector<vpColVector> out)
 {
   // Create an Eigen Matrix to hold the points
@@ -375,7 +542,7 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<AprilTagNode>();
-    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 2);
+    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), 6);
     exec.add_node(node);
     exec.spin();
     rclcpp::shutdown();

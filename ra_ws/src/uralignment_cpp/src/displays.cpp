@@ -6,12 +6,12 @@
 #include <visp3/gui/vpDisplayX.h>
 #include <visp3/vision/vpPose.h>
 #include <visp3/gui/vpPlot.h>
-#include <string>                    // String Operations
-#include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
-#include "sensor_msgs/msg/image.hpp" // ROS2 Image Message
+#include <string>
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
-#include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <visp3/core/vpQuaternionVector.h>
@@ -19,6 +19,13 @@
 #include <visp3/core/vpTranslationVector.h>
 #include <visp3/core/vpHomogeneousMatrix.h>
 #include <mutex>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <algorithm>
+#include <cctype>
+
+namespace fs = std::filesystem;
 
 
 #if !(defined(VISP_HAVE_X11) || defined(VISP_HAVE_GDI) || defined(VISP_HAVE_OPENCV))
@@ -33,7 +40,7 @@ class DisplayNode : public rclcpp::Node
 public:
   DisplayNode() : Node("displays_node")
   {
-
+    // Callback Groups:
     image_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     rclcpp::SubscriptionOptions cam_opts;
     cam_opts.callback_group = image_handling_;
@@ -48,36 +55,30 @@ public:
     width_ = declare_parameter<int>("width",1920);
     height_ = declare_parameter<int>("height",1080);
     fps_ = declare_parameter<int>("fps",30);
-    // QoS controls 
     qos_depth_ = this->declare_parameter<int>("qos_depth", 5);
     qos_reliability_ = this->declare_parameter<std::string>("qos_reliability", "best_effort"); // "best_effort" or "reliable"
-    // Encoding
     preferred_encoding_ = this->declare_parameter<std::string>("preferred_encoding", "bgr8");  // "bgr8" or "rgb8"
-    // QoS
+    // QoS:
     rclcpp::QoS qos{rclcpp::KeepLast(static_cast<size_t>(qos_depth_))};
     qos.durability_volatile();
     if (qos_reliability_ == "reliable") qos.reliable();
     else qos.best_effort();
-    // Subscribe to Camera node's topic
+
+    // Subscriptions:
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     "/camera/color/image_raw", qos,
     std::bind(&DisplayNode::image_callback, this, std::placeholders::_1), cam_opts);
-
     cMo_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
     "cMo", 10, std::bind(&DisplayNode::cMo_callback, this, std::placeholders::_1), vector_opts);
-
     v_c_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
     "v_c", 10, std::bind(&DisplayNode::v_c_callback, this, std::placeholders::_1), vector_opts);
-
     errors_xyz_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
     "errors_xyz", 10, std::bind(&DisplayNode::errors_xyz_callback, this, std::placeholders::_1), vector_opts);
-
     error_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
     "error", 10, std::bind(&DisplayNode::error_callback, this, std::placeholders::_1), vector_opts);
 
     // timer for plot_loop
-    timer_ = this->create_wall_timer(std::chrono::milliseconds(33), 
-    std::bind(&DisplayNode::plot_callback, this), plot_handling_);
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(33), std::bind(&DisplayNode::plot_callback, this), plot_handling_);
 
     initialization();
   }
@@ -90,16 +91,14 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   sensor_msgs::msg::Image::ConstSharedPtr latest_image_;
 
-  // Params
   int width_{1920};
   int height_{1080};
   int fps_{30};
   int qos_depth_{5};
   std::string qos_reliability_{"best_effort"};
   std::string preferred_encoding_{"bgr8"};
-
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
-  std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
+  std::string cdMo_filename = package_path + "/config/cdPo.yaml";
   bool opt_plot;
   bool display_initialized_;
   vpColVector v_c_data_, error_data_, errors_xyz_data_, v_local, exyz_local, err_local;
@@ -118,24 +117,325 @@ private:
   std::vector<vpImagePoint> *traj_vip = nullptr; // To memorize point trajectory
   double t_start;
   std::unique_ptr<vpDisplay> disp_;
-
   std::mutex img_mtx_;
   bool have_img_{false};
   std::mutex state_mtx_;
+  bool have_cam_model_{false};
+  std::string active_camera_path_;
+  std::string intrinsics_path_;
+  std::string active_serial_;
+  int active_width_{0};
+  int active_height_{0};
 
-  void initialization()
+  static std::string trim_(const std::string& s) // Strip leading and trailing whitespace from a string
   {
-    // Camera Intrinsics:
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    size_t e = s.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+  }
+
+  // Derive the workspace root by trimming the install path off the package share path
+  static std::string infer_workspace_root_from_share_(const std::string& share_dir)
+  {
+    const std::string needle = "/install/";
+    const auto pos = share_dir.find(needle);
+    if (pos == std::string::npos) return "";
+    return share_dir.substr(0, pos);
+  }
+
+  std::vector<std::string> candidate_config_dirs_() // Candidate configuration directories
+  {
+    std::vector<std::string> dirs;
+    dirs.push_back(package_path + "/config");
+
+    const std::string ws_root = infer_workspace_root_from_share_(package_path);
+    if (!ws_root.empty())
+    {
+      dirs.push_back(ws_root + "/config");
+      dirs.push_back(ws_root + "/src/uralignment_cpp/config");
+      dirs.push_back(ws_root + "/src/calibration_cpp/config");
+      dirs.push_back(ws_root + "/src/uralignment_py/config");
+      dirs.push_back(ws_root + "/install/uralignment_cpp/share/uralignment_cpp/config");
+      dirs.push_back(ws_root + "/install/calibration_cpp/share/calibration_cpp/config");
+      dirs.push_back(ws_root + "/install/uralignment_py/share/uralignment_py/config");
+    }
+
+    // deduplicate while preserving order
+    std::vector<std::string> uniq;
+    uniq.reserve(dirs.size());
+    for (const auto& d : dirs)
+    {
+      if (d.empty()) continue;
+      if (std::find(uniq.begin(), uniq.end(), d) == uniq.end())
+        uniq.push_back(d);
+    }
+    return uniq;
+  }
+
+  std::vector<std::string> candidate_intrinsics_dirs_() // Candidtate intrinsics directories
+  {
+    auto dirs = candidate_config_dirs_();
+    const std::string ws_root = infer_workspace_root_from_share_(package_path);
+    if (!ws_root.empty())
+      dirs.push_back(ws_root + "/config/intrinsics");
+
+    // de-dup
+    std::vector<std::string> uniq;
+    uniq.reserve(dirs.size());
+    for (const auto& d : dirs)
+    {
+      if (d.empty()) continue;
+      if (std::find(uniq.begin(), uniq.end(), d) == uniq.end())
+        uniq.push_back(d);
+    }
+    return uniq;
+  }
+
+  // Return the first directory entry containing the requested filename
+  static std::string find_first_existing_(const std::vector<std::string>& dirs, const std::string& filename)
+  {
+    for (const auto& d : dirs)
+    {
+      std::error_code ec;
+      const fs::path p = fs::path(d) / filename;
+      if (fs::exists(p, ec) && !ec)
+        return p.string();
+    }
+    return "";
+  }
+
+  static void ensure_dir_(const std::string& dir) // Ensure Directory
+  {
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+  }
+
+  // Reads dPo.yaml format:
+  // rows: 6
+  // cols: 1
+  // data:
+  //   - [val]
+  static bool read_posevector_yaml_exact_(const std::string& path, vpPoseVector& out)
+  {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) return false;
+
+    int rows = 0, cols = 0;
+    std::vector<double> values;
+    std::string line;
+    bool in_data = false;
+
+    while (std::getline(ifs, line))
+    {
+      line = trim_(line);
+      if (line.empty()) continue;
+      if (line.rfind("%YAML", 0) == 0) continue;
+      if (line == "---") continue;
+      if (line[0] == '#') continue;
+
+      if (!in_data)
+      {
+        if (line.rfind("rows:", 0) == 0) rows = std::stoi(trim_(line.substr(5)));
+        else if (line.rfind("cols:", 0) == 0) cols = std::stoi(trim_(line.substr(5)));
+        else if (line.rfind("data:", 0) == 0) in_data = true;
+      }
+      else
+      {
+        const auto lb = line.find('[');
+        const auto rb = line.find(']');
+        if (lb == std::string::npos || rb == std::string::npos || rb <= lb + 1) continue;
+        const std::string num = trim_(line.substr(lb + 1, rb - lb - 1));
+        try { values.push_back(std::stod(num)); } catch (...) {}
+      }
+    }
+
+    if (rows != 6 || cols != 1 || values.size() < 6) return false;
+
+    // ViSP expects resize(rows, cols, flagNullify)
+    vpPoseVector tmp; // fixed-size 6x1
+    for (int i = 0; i < 6; ++i) tmp[i] = values[(size_t)i];
+    out = tmp;
+    return true;
+  }
+
+  // Writes exact cdPo.yaml format
+  static bool write_posevector_yaml_exact_(const std::string& path, const vpPoseVector& p)
+  {
+    std::ofstream ofs(path, std::ios::out | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+
+    ofs << "%YAML:1.0\n---\n";
+    ofs << "rows: 6\n";
+    ofs << "cols: 1\n";
+    ofs << "data:\n";
+    for (int i = 0; i < 6; ++i)
+      ofs << "  - [" << std::setprecision(17) << p[i] << "]\n";
+    return true;
+  }
+
+  // All directories get cdPo.yaml
+  bool write_cdPo_to_all_config_dirs_(const vpPoseVector& p)
+  {
+    const auto dirs = candidate_config_dirs_();
+    bool wrote_any = false;
+
+    for (const auto& d : dirs)
+    {
+      try
+      {
+        ensure_dir_(d);
+        const fs::path out = fs::path(d) / "cdPo.yaml";
+        if (write_posevector_yaml_exact_(out.string(), p))
+          wrote_any = true;
+      }
+      catch (...) {}
+    }
+
+    return wrote_any;
+  }
+
+  // Load the right camera intrinsics from the correct YAML
+  bool load_camera_intrinsics_from_yaml_()
+  {
+    const auto cfg_dirs = candidate_config_dirs_();
+    const auto intr_dirs = candidate_intrinsics_dirs_();
+
+    const std::string ac_path = find_first_existing_(cfg_dirs, "active_camera.yaml");
+    if (ac_path.empty()) return false;
+
+    std::string serial;
+    int w = 0, h = 0;
+
+    // Read with OpenCV FileStorage YAML:1.0
+    cv::FileStorage fsr(ac_path, cv::FileStorage::READ);
+    if (!fsr.isOpened()) return false;
+    fsr["serial"] >> serial;
+    fsr["width"]  >> w;
+    fsr["height"] >> h;
+    fsr.release();
+
+    if (serial.empty() || w <= 0 || h <= 0) return false;
+
+    const std::string intr_name = serial + "_" + std::to_string(w) + "x" + std::to_string(h) + "_intrinsics.yaml";
+    const std::string intr_path = find_first_existing_(intr_dirs, intr_name);
+    if (intr_path.empty()) return false;
+
+    cv::Mat K, D;
+    cv::FileStorage fsi(intr_path, cv::FileStorage::READ);
+    if (!fsi.isOpened()) return false;
+
+    if (!fsi["camera_matrix"].empty()) fsi["camera_matrix"] >> K;
+    if (K.empty() && !fsi["K"].empty()) fsi["K"] >> K;
+
+    if (!fsi["distortion_coefficients"].empty()) fsi["distortion_coefficients"] >> D;
+    if (D.empty() && !fsi["D"].empty()) fsi["D"] >> D;
+
+    fsi.release();
+
+    if (K.empty() || K.rows != 3 || K.cols != 3) return false;
+
     cam.initPersProjWithoutDistortion(
-      907.7258031,  // px - Focal Length
-      906.8582153,  // py - Focal Length
-      657.2998502,  // u0 - Princicple Point
-      358.9750977); // v0 - Principle Point
+      K.at<double>(0,0),
+      K.at<double>(1,1),
+      K.at<double>(0,2),
+      K.at<double>(1,2));
+
+    // commit info for printing/debug
+    active_camera_path_ = ac_path;
+    intrinsics_path_ = intr_path;
+    active_serial_ = serial;
+    active_width_ = w;
+    active_height_ = h;
+
+    have_cam_model_ = true;
+    return true;
+  }
+
+  // Load cdPo.yaml
+  bool load_desired_pose_from_yaml_()
+  {
+    const auto cfg_dirs = candidate_config_dirs_();
+
+    // Prefer canonical cdPo.yaml anywhere
+    std::string desired_path = find_first_existing_(cfg_dirs, "cdPo.yaml");
+
+    if (!desired_path.empty())
+    {
+      if (read_posevector_yaml_exact_(desired_path, cdPo))
+      {
+        cdMo.buildFrom(cdPo);
+        std::cout << "Read Desired Transformation from file: " << desired_path << "\ncdMo:\n" << cdMo << "\n";
+        return true;
+      }
+
+      // Fallback: try ViSP loader
+      try {
+        cdPo.loadYAML(desired_path, cdPo);
+        cdMo.buildFrom(cdPo);
+        std::cout << "Read Desired Transformation from file (ViSP loadYAML): " << desired_path << "\ncdMo:\n" << cdMo << "\n";
+        return true;
+      } catch (...) {
+        std::cout << "Found cdPo.yaml but failed to parse it: " << desired_path << "\n";
+      }
+    }
+
+    desired_path = find_first_existing_(cfg_dirs, "ur_cdMo.yaml");
+    if (!desired_path.empty())
+    {
+      cdPo.loadYAML(desired_path, cdPo);
+      cdMo.buildFrom(cdPo);
+      std::cout << "Read Desired Transformation from legacy file: " << desired_path << "\ncdMo:\n" << cdMo << "\n";
+
+      write_cdPo_to_all_config_dirs_(cdPo);
+
+      return true;
+    }
+
+    // Nothing found: set identity desired pose
+    for (int i = 0; i < 6; ++i) cdPo[i] = 0.0;
+    cdMo = vpHomogeneousMatrix();
+    std::cout << "WARNING: cdPo.yaml and ur_cdMo.yaml not found. Using identity desired pose.\n";
+    return false;
+  }
+
+  // Realtime cMo -> cdPo.yaml from 'c' capture
+  void capture_cdPo_from_current_cMo_(const std::string& reason)
+  {
+    // Convert current pose to pose vector and write it out
+    vpPoseVector cPo(cMo_local);
+
+    if (!write_cdPo_to_all_config_dirs_(cPo))
+    {
+      std::cout << "ERROR: Failed to write cdPo.yaml (reason: " << reason << ")\n";
+      return;
+    }
+
+    // Update desired pose immediately so overlay updates without restart
+    cdPo = cPo;
+    cdMo.buildFrom(cdPo);
+
+    std::cout << "Saved cdPo.yaml from current cMo (reason: " << reason << ")\n";
+  }
+
+  void initialization() // Part of node startup
+  {
+    if (!load_camera_intrinsics_from_yaml_())
+    {
+      have_cam_model_ = false;
+      std::cout << "WARNING: Could not load camera intrinsics yet. Waiting for active_camera.yaml and intrinsics yaml...\n";
+    }
+    else
+    {
+      std::cout << "Loaded intrinsics from yaml:\n";
+      std::cout << "  active_camera: " << active_camera_path_ << "\n";
+      std::cout << "  intrinsics:    " << intrinsics_path_ << "\n";
+      std::cout << "  serial/res:    " << active_serial_ << " " << active_width_ << "x" << active_height_ << "\n";
+    }
 
     // Build Desired Object relative to Camera Frame:
-    cdPo.loadYAML(cdMo_filename, cdPo);
-    cdMo.buildFrom(cdPo);
-    std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
+    load_desired_pose_from_yaml_();
 
     iter_plot = 0;
     I_color.resize(height_, width_);
@@ -177,8 +477,10 @@ private:
 
 
     std::cout << "Displays Node Started!" << std::endl;
+    std::cout << "Controls: Focus the \"Pose from Homography\" window and press 'c' to capture cdPo.yaml" << std::endl;
   }
 
+  // Image feed subscription
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg)
   {
     if (!msg) return;
@@ -187,6 +489,7 @@ private:
     have_img_ = true;
   }
 
+  // cMo Subscription
   void cMo_callback(const geometry_msgs::msg::TransformStamped::SharedPtr msg)
   {
     if(!msg) return;
@@ -203,6 +506,7 @@ private:
     cMo_data_.buildFrom(cMo_t, cMo_R);
   }
 
+  // velocity callback
   void v_c_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     if (!msg || msg->data.size() != 6)
@@ -214,6 +518,7 @@ private:
     }
   }
 
+  // 6DOF error calback
   void errors_xyz_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     if (!msg || msg->data.size() != 6)
@@ -225,6 +530,7 @@ private:
     }
   }
 
+  // Error Norm Callbacks
   void error_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
   {
     if (!msg || msg->data.size() != 2)
@@ -236,6 +542,7 @@ private:
     }
   }
 
+  // Update display & plot features
   void plot_callback()
   {
     sensor_msgs::msg::Image::ConstSharedPtr img;
@@ -253,6 +560,15 @@ private:
       err_local = error_data_;
     }
     cdMc = cdMo * cMo_local.inverse(); // Update visual features
+    if (!have_cam_model_)
+    {
+      if (load_camera_intrinsics_from_yaml_())
+      {
+        std::cout << "Loaded intrinsics from yaml (late):\n";
+        std::cout << "  active_camera: " << active_camera_path_ << "\n";
+        std::cout << "  intrinsics:    " << intrinsics_path_ << "\n";
+      }
+    }
 
     // Convertion (GUI thread)
     cv_bridge::CvImageConstPtr cv_ptr;
@@ -292,7 +608,7 @@ private:
       disp_ = std::make_unique<vpDisplayX>(I_color, 100, 30, "Pose from Homography");
       display_initialized_ = true;
 #else
-      return; // no GUI backend available
+      return;
 #endif
     }
 
@@ -304,9 +620,24 @@ private:
         vpImageConvert::convert(I_color, I);
         vpDisplay::displayText(I, 20, 20, ss.str(), vpColor::red);
         // Display desired and current pose features:
-        vpDisplay::displayFrame(I_color, cdMo, cam, 0.06512, vpColor::yellow, 2);
-        vpDisplay::displayFrame(I_color, cMo_local, cam, 0.06512, vpColor::none, 3);
+        if (have_cam_model_)
+        {
+          vpDisplay::displayFrame(I_color, cdMo, cam, 0.06512, vpColor::yellow, 2);
+          vpDisplay::displayFrame(I_color, cMo_local, cam, 0.06512, vpColor::none, 3);
+        }
+
         vpDisplay::flush(I_color);
+
+        // Press 'c' in the ViSP window to capture cdPo.yaml
+        std::string key;
+        if (vpDisplay::getKeyboardEvent(I_color, key, false))
+        {
+          if (key == "c" || key == "C")
+          {
+            capture_cdPo_from_current_cMo_("keypress 'c'");
+          }
+        }
+      
       }
 
       if (opt_plot)

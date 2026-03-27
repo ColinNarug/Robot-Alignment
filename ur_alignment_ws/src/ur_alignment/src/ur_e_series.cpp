@@ -1,3 +1,7 @@
+/*
+This node is an incorrect version of the robot node generated to suit markerless alignment only.
+*/
+
 #include <visp3/core/vpConfig.h>
 #include <visp3/robot/vpRobotUniversalRobots.h>
 #include <visp3/core/vpHomogeneousMatrix.h>

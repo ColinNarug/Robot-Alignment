@@ -6,13 +6,13 @@
 #include <visp3/visual_features/vpFeatureThetaU.h>
 #include <visp3/visual_features/vpFeatureTranslation.h>
 #include <visp3/vs/vpServo.h>
-#include <string>                    // String Operations
-#include "rclcpp/rclcpp.hpp"         // ROS2 CPP API
-#include "std_msgs/msg/string.hpp"   // ROS2 String Message
+#include <string>
+#include "rclcpp/rclcpp.hpp" 
+#include "std_msgs/msg/string.hpp"
 #include "cv_bridge/cv_bridge.hpp"
 #include "opencv2/opencv.hpp"
 #include <cmath>
-#include <ament_index_cpp/get_package_share_directory.hpp> // File Paths for .yamls
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/char.hpp>
@@ -34,8 +34,7 @@ std::atomic<bool> sighup_requested_(false);
 
 extern "C" void ra_sighup_handler(int)
 {
-  // Signal-safe: only touch atomics
-  sighup_requested_.store(true, std::memory_order_relaxed);
+  sighup_requested_.store(true, std::memory_order_relaxed); // Signal-safe: only touch atomics
 }
 
 //! [Macro defined]
@@ -49,6 +48,10 @@ class UniversalRobots_E_Series : public rclcpp::Node
 public:
   UniversalRobots_E_Series() : Node("ur_node")
   {
+    // Parameters:
+    desired_offset_d_m = this->declare_parameter<double>("desired_offset_d_m", 0.2159);
+    robot_ip = this->declare_parameter<std::string>("robot_ip", robot_ip);
+    // Callback Groups:
     cMo_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // cMo only
     rclcpp::SubscriptionOptions cMo_opts;
     cMo_opts.callback_group = cMo_handling_;
@@ -68,7 +71,7 @@ public:
     "/teleop/last_key", key_qos, 
     std::bind(&UniversalRobots_E_Series::key_callback, this, std::placeholders::_1), sub_opts);
     offset_twist_sub_ = this->create_subscription<geometry_msgs::msg::TwistStamped>(
-    "/offset/cmd_twist_cf",
+    "/offset/cmd_twist",
     rclcpp::SensorDataQoS(),
     std::bind(&UniversalRobots_E_Series::offset_twist_callback, this, std::placeholders::_1), sub_opts);
 
@@ -104,8 +107,11 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pbvs_converged_pub_;
 
   // PBVS Convergence Thresholds!
-  double convergence_threshold_t = 0.001; // Value in [m]
-  double convergence_threshold_tu = 0.1;  // Value in [deg]
+  double convergence_threshold_t = 0.0002164; // Value in [m]
+  double convergence_threshold_tu = 0.0414; // Value in [deg]
+    // Desired offset parameters [m]
+  double reference_offset_d_m = 0.2159;
+  double desired_offset_d_m = 0.2159;
 
   // Latch latest offset command
   geometry_msgs::msg::TwistStamped last_offset_twist_;
@@ -116,8 +122,9 @@ private:
 
   vpRobotUniversalRobots robot; // Create an instance of vpRobotUniversalRobots Class named 'robot'
   std::string package_path = ament_index_cpp::get_package_share_directory("uralignment_cpp");
-  std::string eMc_filename = package_path + "/config/ur_eMc.yaml";
-  std::string cdMo_filename = package_path + "/config/ur_cdMo.yaml";
+  std::string eMc_filename = package_path + "/config/ur_ePc.yaml";
+  std::string eMt_filename = package_path + "/config/ur_ePt.yaml";
+  std::string cdMo_filename = package_path + "/config/cdPo.yaml";
   std::string robot_ip = "192.168.1.101";
   bool opt_adaptive_gain; 
   bool opt_task_sequencing;
@@ -130,8 +137,9 @@ private:
   bool cMo_valid;
   bool is_quit_key(char k) const { return k == 'q' || k == 'Q' || k == 0x1B; }
   bool should_send_velocities(char k) const { return k == 'x' || k == 'X'; }
-  vpPoseVector ePc, cdPo;
-  vpHomogeneousMatrix cdMc, cdMo, oMo, eMc, cMo_data_;
+  vpPoseVector ePc, ePt, cdPo, cdPo_runtime;
+  vpPoseVector tPo_ref, tPo_des;
+  vpHomogeneousMatrix cdMc, cdMo, cdMo_saved, oMo, eMc, eMt, cMt_nom, cMt_eff, delta_t, tMo_ref, tMo_des, cMo_data_;
   vpColVector v_c, errors_xyz, error; // velocity commands | Error in 6DOF | Trans/Rot Euclidian Norms
   std::vector<vpHomogeneousMatrix> v_oMo, v_cdMc;
   vpThetaUVector cd_tu_c;
@@ -179,10 +187,46 @@ private:
     ePc.loadYAML(eMc_filename, ePc);
     eMc.buildFrom(ePc);
     std::cout << "Read extrinsic parameters from file. eMc:\n" << eMc << "\n";
-    // Build Desired Object relative to Camera Frame:
+
+    // Get tool extrinsics from manual TCP yaml:
+    ePt.loadYAML(eMt_filename, ePt);
+    eMt.buildFrom(ePt);
+    std::cout << "Read tool parameters from file. eMt:\n" << eMt << "\n";
+
+    // Read saved reference aligned pose:
     cdPo.loadYAML(cdMo_filename, cdPo);
-    cdMo.buildFrom(cdPo);
-    std::cout << "Read Desired Transformation from file. cdMo:\n" << cdMo << "\n";
+    cdMo_saved.buildFrom(cdPo);
+    std::cout << "Read saved reference pose from file. cdMo_saved:\n" << cdMo_saved << "\n";
+
+    // Nominal camera-to-tooling from current eMc and eMt
+    cMt_nom = eMc.inverse() * eMt;
+    std::cout << "Nominal cMt = inv(eMc) * eMt:\n" << cMt_nom << "\n";
+
+    // Build reference and desired tooling->object offset transforms
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+      tPo_ref[i] = 0.0;
+      tPo_des[i] = 0.0;
+    }
+    // For this tooling/TCP convention, that corresponds to negative tool-z in tPo.
+    tPo_ref[2] = -reference_offset_d_m;
+    tPo_des[2] = -desired_offset_d_m;
+    tMo_ref.buildFrom(tPo_ref);
+    tMo_des.buildFrom(tPo_des);
+
+    // Infer effective cMt from the saved aligned pose at the reference offset, then reconstruct the runtime desired cdMo for the current desired offset.
+    cMt_eff = cdMo_saved * tMo_ref.inverse();
+    delta_t = cMt_nom.inverse() * cMt_eff;
+    cdMo = cMt_nom * delta_t * tMo_des;
+    cdPo_runtime.buildFrom(cdMo);
+
+    std::cout << "reference_offset_d_m = " << reference_offset_d_m << "\n";
+    std::cout << "desired_offset_d_m   = " << desired_offset_d_m << "\n";
+    std::cout << "Effective cMt inferred from saved cdPo:\n" << cMt_eff << "\n";
+    std::cout << "delta_t = inv(cMt_nom) * cMt_eff:\n" << delta_t << "\n";
+    std::cout << "Runtime desired transformation cdMo:\n" << cdMo << "\n";
+    std::cout << "Runtime desired pose cdPo_runtime:\n" << cdPo_runtime << "\n";
+
     robot.set_eMc(eMc); // Set location of the camera wrt end-effector frame
     robot.setRobotState(vpRobot::STATE_VELOCITY_CONTROL);
 
@@ -213,7 +257,7 @@ private:
     }
     else
     {
-      task.setLambda(0.2); // Overall speed
+      task.setLambda(0.3); // Overall speed
     }
     task.setServo(vpServo::EYEINHAND_CAMERA);
     task.setInteractionMatrixType(vpServo::CURRENT);
@@ -287,7 +331,7 @@ private:
     if(!cMo_valid){return;}
     cdMc = cdMo * cMo_data_.inverse();
 
-    if(first_time) // oMo cannot be found until receives correct cMo ( i.e. not in initialization() )
+    if(first_time) // oMo cannot be found until receives correct cMo ( i.e. this cannot be placed in initialization() )
     {
       RCLCPP_INFO(this->get_logger(), "first_time = true!");
       // Introduce security wrt tag positioning in order to avoid PI rotation (flip logic):
@@ -308,7 +352,7 @@ private:
         std::cout << "Desired frame modified to avoid PI rotation of the camera" << std::endl;
         oMo = v_oMo[1]; // Introduce PI rotation
       }
-      first_time = false; // Do not return to cMo calc
+      first_time = false; // Do not return to oMo calc
       std::cout << "oMo:\n" << oMo << std::endl;
     }
 
@@ -385,7 +429,7 @@ private:
       }
       else
       {
-        // Offset watchdog: only use offset twist if it has been updated recently.
+        // Only use offset twist if it has been updated recently.
         const double max_age_s = 0.1;  // 100 ms
 
         if (offset_twist_valid)
@@ -414,6 +458,8 @@ private:
           v_c = 0;
         }
       }
+
+      // Use camera frame during PBVS, then use end-effector frame during offset closure
       robot.setVelocity(has_converged ? vpRobot::END_EFFECTOR_FRAME : vpRobot::CAMERA_FRAME, v_c);
 
       std_msgs::msg::Float64MultiArray vel;

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# 1
 """
 Launch args:
   use_camera:=true|false   -> starts/stops d435i_camera
@@ -32,14 +31,6 @@ def generate_launch_description() -> LaunchDescription:
         emulate_tty=True,
     )
 
-    wrench = Node(
-        package="uralignment_cpp",
-        executable="wrench",
-        output="screen",
-        emulate_tty=True,
-        condition=IfCondition(use_robot),
-    )
-
     offset = Node(
         package="uralignment_cpp",
         executable="offset",
@@ -61,7 +52,6 @@ def generate_launch_description() -> LaunchDescription:
 
         d435i_camera,
         TimerAction(period=5.0, actions=[apriltags]),
-        TimerAction(period=10.0, actions=[wrench]),
-        TimerAction(period=15.0, actions=[offset]),
-        TimerAction(period=20.0, actions=[ur_e_series]),
+        TimerAction(period=10.0, actions=[offset]),
+        TimerAction(period=15.0, actions=[ur_e_series]),
     ])

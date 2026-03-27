@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# 1
 """
 Launch args:
   use_camera:=true|false   -> starts/stops d435i_camera
@@ -32,13 +31,6 @@ def generate_launch_description() -> LaunchDescription:
         emulate_tty=True,
     )
 
-    displays = Node(
-        package="uralignment_cpp",
-        executable="displays",
-        output="screen",
-        emulate_tty=True,
-    )
-
     ur_e_series = Node(
         package="uralignment_cpp",
         executable="ur_e_series",
@@ -47,12 +39,19 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(use_robot),
     )
 
+    displays = Node(
+        package="uralignment_cpp",
+        executable="displays",
+        output="screen",
+        emulate_tty=True,
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("use_camera", default_value="true"),
         DeclareLaunchArgument("use_robot", default_value="true"),
 
         d435i_camera,
         TimerAction(period=5.0, actions=[apriltags]),
-        TimerAction(period=10.0, actions=[displays]),
         TimerAction(period=15.0, actions=[ur_e_series]),
+        TimerAction(period=10.0, actions=[displays]),
     ])

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=run_markerless_alignment
-Comment=Robot-Alignment: docker + build + launch markerless alignment stack
-Terminal=false
-Exec=terminator --fullscreen -x bash -lc "$HOME/Robot-Alignment/run_markerless_alignment.sh"
-Icon=utilities-terminal
-Categories=Development;
-StartupNotify=true
