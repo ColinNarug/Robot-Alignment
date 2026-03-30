@@ -144,13 +144,24 @@ install(TARGETS
 
 
 # checkerboard_node #########################################################
-add_executable(checkerboard_node src/checkerboard_node.cpp) # Add to build process
+add_executable(checkerboard_node src/checkerboard_node.cpp)
 target_link_libraries(checkerboard_node ${VISP_LIBRARIES} ${Boost_LIBRARIES} ${EIGEN3_LIBRARIES} ${OpenCV_LIBS} ${REALSENSE2_LIB})
 ament_target_dependencies(checkerboard_node rclcpp std_msgs sensor_msgs geometry_msgs image_transport cv_bridge ament_index_cpp OpenCV tf2)
 ####################################################################
 
 
+# pendant_tcp node ##########################################################
+add_executable(pendant_tcp src/pendant_tcp.cpp)
+ament_target_dependencies(pendant_tcp rclcpp)
+target_link_libraries(pendant_tcp ${OpenCV_LIBS} Eigen3::Eigen)
+target_include_directories(pendant_tcp PRIVATE ${OpenCV_INCLUDE_DIRS})
+#############################################################################
+
+
+
+
 install(TARGETS
+  pendant_tcp
   checkerboard_node
   calib_utils
   intrinsics_calib
