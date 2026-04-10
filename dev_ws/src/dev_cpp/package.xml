@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3"> <!-- declare package xml format version -->
+  <name>dev_cpp</name> <!-- define package name -->
+  <version>0.0.0</version> <!-- define package version -->
+  <description>Template ROS2 nodes for alignment development in dev_ws</description> <!-- describe package purpose -->
+  <maintainer email="nickolas.giffen@outlook.com">giffen</maintainer> <!-- define package maintainer -->
+  <license>GPL-3.0</license> <!-- define package license -->
+
+  <buildtool_depend>ament_cmake</buildtool_depend> <!-- declare build system dependency -->
+
+  <depend>rclcpp</depend> <!-- declare ros2 cpp client dependency -->
+  <depend>std_msgs</depend> <!-- declare standard message dependency -->
+  <depend>sensor_msgs</depend> <!-- declare sensor message dependency -->
+  <depend>geometry_msgs</depend> <!-- declare geometry message dependency -->
+  <depend>ament_index_cpp</depend> <!-- declare package share lookup dependency -->
+  <depend>OpenCV</depend> <!-- declare opencv dependency for yaml storage -->
+
+  <test_depend>ament_lint_auto</test_depend> <!-- declare automatic lint dependency -->
+  <test_depend>ament_lint_common</test_depend> <!-- declare common lint dependency -->
+
+  <export> <!-- begin export section -->
+    <build_type>ament_cmake</build_type> <!-- declare ament cmake build type -->
+  </export> <!-- end export section -->
+</package> <!-- end package description -->
