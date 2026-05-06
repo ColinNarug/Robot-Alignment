@@ -121,13 +121,13 @@ https://cli.github.com/packages stable/main
 ### What this is
 This tells Git what name and email address to attach to commits.
 A Git commit records information like:
-```text
+
 Author name
 Author email
 Commit message
 File changes
 Timestamp
-```
+
 
 ### Why this is needed
 Without a configured name and email, Git may refuse to create commits or may attach the wrong identity to commits.
@@ -201,7 +201,7 @@ gh repo view ColinNarug/Robot-Alignment
 
 ---
 
-## 5. Manual token fallback method
+### 4.1 Manual token fallback method
 
 ### What this is
 This is the backup method if GitHub CLI authentication is not used.
