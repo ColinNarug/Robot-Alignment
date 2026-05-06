@@ -278,11 +278,6 @@ origin  https://github.com/ColinNarug/Robot-Alignment.git (fetch)
 origin  https://github.com/ColinNarug/Robot-Alignment.git (push)
 
 
-Check the branch and working tree:
-```bash
-git branch
-git status
-```
 
 
 ---
@@ -293,13 +288,12 @@ git status
 `git status` shows the current state of the repository.
 
 It reports files as:
-```text
 Untracked
 Modified
 Staged
 Committed
 Ready to push
-```
+
 
 ### Why this is needed
 This is the main safety-check command. It should be used before adding, committing, pulling, or pushing so the user knows exactly what Git sees.
