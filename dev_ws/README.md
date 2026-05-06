@@ -69,9 +69,9 @@ git --version
 ```
 
 Expected output style:
-```text
+
 git version 2.53.0
-```
+
 The exact version may be different.
 
 ---
@@ -99,9 +99,9 @@ gh --version
 ```
 
 Expected output style:
-```text
+
 gh version 2.92.0
-```
+
 The exact version may be different.
 
 To check where Ubuntu is getting `gh` from:
@@ -167,9 +167,8 @@ This connects the Ubuntu terminal to a GitHub account using GitHub CLI and confi
 ### Why this is needed
 Cloning public repositories can work without authentication, but pushing changes to GitHub requires authentication.
 This guide uses HTTPS because it matches the familiar GitHub clone URL format:
-```text
 https://github.com/OWNER/REPOSITORY.git
-```
+
 GitHub CLI stores and supplies the authentication token so the user does not have to manually paste a token every time.
 
 
@@ -179,12 +178,11 @@ gh auth login --hostname github.com --git-protocol https --web
 ```
 
 Typical prompt choices:
-```text
 GitHub.com
 HTTPS
 Login with a web browser
 Authenticate Git with your GitHub credentials: Y
-```
+
 
 After login, explicitly configure Git to use GitHub CLI as the credential helper:
 ```bash
@@ -276,10 +274,9 @@ git remote -v
 ```
 
 Expected style of output:
-```text
 origin  https://github.com/ColinNarug/Robot-Alignment.git (fetch)
 origin  https://github.com/ColinNarug/Robot-Alignment.git (push)
-```
+
 
 Check the branch and working tree:
 ```bash
