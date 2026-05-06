@@ -69,9 +69,9 @@ git --version
 ```
 
 Expected output style:
-```text
+
 git version 2.53.0
-```
+
 The exact version may be different.
 
 ---
@@ -99,9 +99,9 @@ gh --version
 ```
 
 Expected output style:
-```text
+
 gh version 2.92.0
-```
+
 The exact version may be different.
 
 To check where Ubuntu is getting `gh` from:
@@ -121,13 +121,13 @@ https://cli.github.com/packages stable/main
 ### What this is
 This tells Git what name and email address to attach to commits.
 A Git commit records information like:
-```text
+
 Author name
 Author email
 Commit message
 File changes
 Timestamp
-```
+
 
 ### Why this is needed
 Without a configured name and email, Git may refuse to create commits or may attach the wrong identity to commits.
@@ -156,15 +156,6 @@ Check the global Git settings:
 git config --global --list
 ```
 
-Check only the configured name:
-```bash
-git config --global user.name
-```
-
-Check only the configured email:
-```bash
-git config --global user.email
-```
 
 ---
 
@@ -176,9 +167,8 @@ This connects the Ubuntu terminal to a GitHub account using GitHub CLI and confi
 ### Why this is needed
 Cloning public repositories can work without authentication, but pushing changes to GitHub requires authentication.
 This guide uses HTTPS because it matches the familiar GitHub clone URL format:
-```text
 https://github.com/OWNER/REPOSITORY.git
-```
+
 GitHub CLI stores and supplies the authentication token so the user does not have to manually paste a token every time.
 
 
@@ -188,12 +178,11 @@ gh auth login --hostname github.com --git-protocol https --web
 ```
 
 Typical prompt choices:
-```text
 GitHub.com
 HTTPS
 Login with a web browser
 Authenticate Git with your GitHub credentials: Y
-```
+
 
 After login, explicitly configure Git to use GitHub CLI as the credential helper:
 ```bash
@@ -212,7 +201,7 @@ gh repo view ColinNarug/Robot-Alignment
 
 ---
 
-## 5. Manual token fallback method
+### 4.1 Manual token fallback method
 
 ### What this is
 This is the backup method if GitHub CLI authentication is not used.
@@ -285,10 +274,9 @@ git remote -v
 ```
 
 Expected style of output:
-```text
 origin  https://github.com/ColinNarug/Robot-Alignment.git (fetch)
 origin  https://github.com/ColinNarug/Robot-Alignment.git (push)
-```
+
 
 Check the branch and working tree:
 ```bash
