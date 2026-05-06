@@ -156,15 +156,6 @@ Check the global Git settings:
 git config --global --list
 ```
 
-Check only the configured name:
-```bash
-git config --global user.name
-```
-
-Check only the configured email:
-```bash
-git config --global user.email
-```
 
 ---
 
