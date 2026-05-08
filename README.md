@@ -141,7 +141,7 @@ Its sequence is:
 5. Stop when force magnitude exceeds baseline plus the configured contact threshold for enough consecutive samples
 
 
-
+.
 
 # Acknowledgment
 **Nickolas Giffen**
