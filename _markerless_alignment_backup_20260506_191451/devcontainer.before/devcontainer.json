@@ -1,0 +1,102 @@
+{
+  // Name of the Dev Container (shown in VS Code)
+  "name": "UR Alignment Dev Container",
+
+  // Run container with full privileges (like --privileged in Docker)
+  "privileged": true,
+
+  // Default user inside the container
+  "remoteUser": "ur_user",
+
+  // Match container user UID/GID to host (avoids root-owned files)
+  "updateRemoteUserUID": true,
+
+  // Build configuration
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "USERNAME": "ur_user",
+      "USER_UID": "1000",
+      "USER_GID": "1000"
+    }
+  },
+
+  // Workspace paths
+  "workspaceFolder": "/home/ur_user/ur_alignment_ws",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/ur_user/ur_alignment_ws,type=bind",
+
+  // VS Code extensions to install automatically
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-themes",
+        "twxs.cmake",
+        "donjayamanne.python-extension-pack",
+        "eamodio.gitlens",
+        "ms-iot.vscode-ros"
+      ]
+    }
+  },
+
+  // Environment variables inside the container
+  "containerEnv": {
+    "DISPLAY": "unix:0",                              // Required for X11 GUI forwarding
+    "QT_X11_NO_MITSHM": "1",                          // Avoids shared memory issues with X11
+    "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",        // ROS 2 discovery limited to subnet
+  "ROS_DOMAIN_ID": "${localEnv:ROS_DOMAIN_ID:42}",    // ROS 2 domain for isolation
+    "COLCON_LOG_PATH": "/home/ur_user/.colcon/logs",
+    "WS_DIR": "/home/ur_user/ur_alignment_ws",        // Workspace path inside container
+    "CMAKE_PREFIX_PATH": "/usr/local:${localEnv:CMAKE_PREFIX_PATH}"
+  },
+
+  // Extra docker run arguments (same as in run_container.sh)
+  "runArgs": [
+    "--name=ur-alignment-container",              // Container name
+    "--net=host",                                 // Share network with host (ROS 2 needs this)
+    "--pid=host",                                 // Share process namespace
+    "--ipc=host",                                 // Share IPC namespace
+    "--gpus", "all",                              // Enable all GPUs
+
+    // USB devices
+    "--device-cgroup-rule=c 189:* rwm",
+    "--device=/dev/bus/usb:/dev/bus/usb",
+    // ADD OTHER DEVIDES HERE AS NEEDED
+
+    // Video devices
+    "--device-cgroup-rule=c 81:* rwm",
+    // ADD OTHER DEVIDES HERE AS NEEDED
+
+    // Graphics acceleration (OpenGL / Vulkan)
+    "--device=/dev/dri:/dev/dri",
+
+    // X11 display forwarding
+    "-e", "DISPLAY=${env:DISPLAY}",
+
+    // Resource settings
+    "--shm-size=4g",
+    "--ulimit", "memlock=-1:-1",
+    "--stop-timeout", "5",
+
+    "--group-add=44",
+    "--group-add=46",
+
+    // Privileged mode (needed for hardware access)
+    "--privileged"
+  ],
+
+  // Extra mounts for host resources
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
+    "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
+    "source=/etc/timezone,target=/etc/timezone,type=bind,readonly",
+    "source=/etc/localtime,target=/etc/localtime,type=bind,readonly",
+    "source=/run/udev,target=/run/udev,type=bind,readonly"
+    ],
+
+  // Run once on host before container is created
+  "initializeCommand": "bash -lc 'command -v xhost >/dev/null 2>&1 && xhost +SI:localuser:$(whoami) || true'",
+
+  // Run inside the container after creation
+  "postCreateCommand": "sudo rosdep update && sudo rosdep install --from-paths src --ignore-src -y && sudo chown -R $(whoami) /home/ur_user/ur_alignment_ws/"
+}
