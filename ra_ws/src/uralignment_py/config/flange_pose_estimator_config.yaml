@@ -30,7 +30,7 @@ CAMERA_PARAMETERS:
 # Detection parameters
 # =========================================================
 DETECTION_PARAMS:
-  MODEL_PATH: "src/ur_alignment/models/detection_model.pt"       # Path to the detection model
+  MODEL_PATH: "models/detection_model.pt"       # Path to the detection model
   MIN_CONFIDENCE_HOLE: 0.5    # [0-1] Confidence threshold for holes
   MIN_CONFIDENCE_FLANGE: 0.5  # [0-1] Confidence threshold for flanges
   BB_INCREASE_RATIO: 0.15     # [%] Expansion ratio for the extracted ROI around a hole
@@ -64,7 +64,7 @@ RANSAC_PARAMS:
 # Ellipse extraction parameters --> Segmentation Method
 # =========================================================
 SEGMENTATION_PARAMS:
-  MODEL_PATH: "src/ur_alignment/models/segmentation_model.pth"       # Path to the segmentation model
+  MODEL_PATH: "models/segmentation_model.pth"       # Path to the segmentation model
   # These should be changed if, in the future, the net will be trained with other configurations
   MIN_CONFIDENCE_HOLE: 0.7  # [] Confidence threshold for holes [0-1]
   ROI_SIZE: [256, 256]      # [pix] Size of the square ROI around a detected hole

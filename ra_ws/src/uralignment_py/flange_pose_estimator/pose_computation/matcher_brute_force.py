@@ -4,7 +4,7 @@ import itertools
 from spatialmath import SE3
 from typing import Optional
 
-from ur_alignment.flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
+from flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
 
 
 

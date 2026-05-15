@@ -22,10 +22,16 @@
 #include <visp3/core/vpTime.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <stdexcept>
 #include <visp3/core/vpQuaternionVector.h>
 #include <visp3/core/vpRotationMatrix.h>
 #include <visp3/core/vpTranslationVector.h>
 #include <visp3/core/vpHomogeneousMatrix.h>
+
+namespace fs = std::filesystem;
 
 std::atomic<char> last_key_{' '}; // starts “STOP”
 std::atomic<bool> send_velocities_(false);
@@ -50,6 +56,7 @@ public:
   {
     // Parameters:
     desired_offset_d_m = this->declare_parameter<double>("desired_offset_d_m", 0.2159);
+    cdMo_mode = this->declare_parameter<std::string>("cdMo_mode", "saved_yaml");
     robot_ip = this->declare_parameter<std::string>("robot_ip", robot_ip);
     // Callback Groups:
     cMo_handling_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); // cMo only
@@ -125,6 +132,9 @@ private:
   std::string eMc_filename = package_path + "/config/ur_ePc.yaml";
   std::string eMt_filename = package_path + "/config/ur_ePt.yaml";
   std::string cdMo_filename = package_path + "/config/cdPo.yaml";
+  std::string cPt_filename = package_path + "/config/cPt.yaml";
+  std::string cdPo_runtime_filename = package_path + "/config/cdPo_runtime.yaml";
+  std::string cdMo_mode = "saved_yaml";
   std::string robot_ip = "192.168.1.101";
   bool opt_adaptive_gain; 
   bool opt_task_sequencing;
@@ -137,9 +147,9 @@ private:
   bool cMo_valid;
   bool is_quit_key(char k) const { return k == 'q' || k == 'Q' || k == 0x1B; }
   bool should_send_velocities(char k) const { return k == 'x' || k == 'X'; }
-  vpPoseVector ePc, ePt, cdPo, cdPo_runtime;
+  vpPoseVector ePc, ePt, cPt, cdPo, cdPo_runtime;
   vpPoseVector tPo_ref, tPo_des;
-  vpHomogeneousMatrix cdMc, cdMo, cdMo_saved, oMo, eMc, eMt, cMt_nom, cMt_eff, delta_t, tMo_ref, tMo_des, cMo_data_;
+  vpHomogeneousMatrix cdMc, cdMo, cdMo_saved, oMo, eMc, eMt, cMt_nom, cMt_eff, cMt_calib, delta_t, tMo_ref, tMo_des, cMo_data_;
   vpColVector v_c, errors_xyz, error; // velocity commands | Error in 6DOF | Trans/Rot Euclidian Norms
   std::vector<vpHomogeneousMatrix> v_oMo, v_cdMc;
   vpThetaUVector cd_tu_c;
@@ -152,7 +162,163 @@ private:
   double error_tr;
   double error_tu;
 
-    void safe_stop_robot(const char *where)
+  bool is_valid_cdMo_mode(const std::string & mode) const
+  {
+    return mode == "saved_yaml" ||
+           mode == "pseudo_parameterized_offset" ||
+           mode == "calibrated_parameterized_offset";
+  }
+
+  void require_yaml_file(const std::string & filename, const std::string & description) const
+  {
+    if (!fs::exists(filename))
+    {
+      throw std::runtime_error(description + " not found: " + filename);
+    }
+  }
+
+  void write_posevector_yaml(const std::string & filename, const vpPoseVector & pose) const
+  {
+    const fs::path out_path(filename);
+    if (out_path.has_parent_path())
+    {
+      std::error_code ec;
+      fs::create_directories(out_path.parent_path(), ec);
+      if (ec)
+      {
+        throw std::runtime_error("Failed to create runtime YAML directory: " +
+                                 out_path.parent_path().string() + " : " + ec.message());
+      }
+    }
+
+    std::ofstream out(filename, std::ios::out | std::ios::trunc);
+    if (!out)
+    {
+      throw std::runtime_error("Failed to open runtime YAML for writing: " + filename);
+    }
+
+    out << "%YAML:1.0\n---\n";
+    out << "rows: 6\n";
+    out << "cols: 1\n";
+    out << "data:\n";
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+      out << "  - [" << std::setprecision(17) << pose[i] << "]\n";
+    }
+  }
+
+  void save_runtime_cdPo()
+  {
+    cdPo_runtime.buildFrom(cdMo);
+    write_posevector_yaml(cdPo_runtime_filename, cdPo_runtime);
+    std::cout << "Saved runtime desired pose cdPo_runtime to: " << cdPo_runtime_filename << "\n";
+  }
+
+  void setup_desired_alignment_transform()
+  {
+    if (!is_valid_cdMo_mode(cdMo_mode))
+    {
+      throw std::invalid_argument(
+        "Invalid cdMo_mode='" + cdMo_mode +
+        "'. Valid modes: saved_yaml, pseudo_parameterized_offset, calibrated_parameterized_offset");
+    }
+
+    std::cout << "cdMo_mode = " << cdMo_mode << "\n";
+
+    // Only the calibrated pipeline uses calibration_cpp's ePc.yaml for robot.set_eMc(eMc).
+    if (cdMo_mode == "calibrated_parameterized_offset")
+    {
+      eMc_filename = package_path + "/config/ePc.yaml";
+    }
+    else
+    {
+      eMc_filename = package_path + "/config/ur_ePc.yaml";
+    }
+
+    // Get camera extrinsics:
+    require_yaml_file(eMc_filename, "Camera extrinsics YAML");
+    ePc.loadYAML(eMc_filename, ePc);
+    eMc.buildFrom(ePc);
+    std::cout << "Read extrinsic parameters from file: " << eMc_filename << "\neMc:\n" << eMc << "\n";
+
+    // Build reference and desired tooling->object offset transforms.
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+      tPo_ref[i] = 0.0;
+      tPo_des[i] = 0.0;
+    }
+    // For this tooling/TCP convention, that corresponds to negative tool-z in tPo.
+    tPo_ref[2] = -reference_offset_d_m;
+    tPo_des[2] = -desired_offset_d_m;
+    tMo_ref.buildFrom(tPo_ref);
+    tMo_des.buildFrom(tPo_des);
+
+    if (cdMo_mode == "saved_yaml")
+    {
+      // Regular cdPo.yaml procedure: use the hard-saved desired alignment directly.
+      require_yaml_file(cdMo_filename, "Saved desired pose YAML");
+      cdPo.loadYAML(cdMo_filename, cdPo);
+      cdMo_saved.buildFrom(cdPo);
+      cdMo = cdMo_saved;
+      save_runtime_cdPo();
+
+      std::cout << "saved_yaml mode selected. Using hard-saved cdPo.yaml directly.\n";
+      std::cout << "Read saved desired pose from file: " << cdMo_filename << "\ncdMo_saved:\n" << cdMo_saved << "\n";
+      std::cout << "Runtime desired transformation cdMo:\n" << cdMo << "\n";
+      std::cout << "Runtime desired pose cdPo_runtime:\n" << cdPo_runtime << "\n";
+      return;
+    }
+
+    if (cdMo_mode == "pseudo_parameterized_offset")
+    {
+      // Read saved reference aligned pose at the known reference offset.
+      require_yaml_file(cdMo_filename, "Saved reference pose YAML");
+      cdPo.loadYAML(cdMo_filename, cdPo);
+      cdMo_saved.buildFrom(cdPo);
+      std::cout << "Read saved reference pose from file: " << cdMo_filename << "\ncdMo_saved:\n" << cdMo_saved << "\n";
+
+      // Get tool extrinsics from manual TCP yaml.
+      require_yaml_file(eMt_filename, "Manual tool extrinsics YAML");
+      ePt.loadYAML(eMt_filename, ePt);
+      eMt.buildFrom(ePt);
+      std::cout << "Read tool parameters from file: " << eMt_filename << "\neMt:\n" << eMt << "\n";
+
+      // Nominal camera-to-tooling from current manual eMc and eMt.
+      cMt_nom = eMc.inverse() * eMt;
+      std::cout << "Nominal cMt = inv(eMc) * eMt:\n" << cMt_nom << "\n";
+
+      // Infer effective cMt from the saved aligned pose at the reference offset,
+      // then reconstruct runtime desired cdMo for the current desired offset.
+      cMt_eff = cdMo_saved * tMo_ref.inverse();
+      delta_t = cMt_nom.inverse() * cMt_eff;
+      cdMo = cMt_nom * delta_t * tMo_des;
+      save_runtime_cdPo();
+
+      std::cout << "reference_offset_d_m = " << reference_offset_d_m << "\n";
+      std::cout << "desired_offset_d_m   = " << desired_offset_d_m << "\n";
+      std::cout << "Effective cMt inferred from saved cdPo:\n" << cMt_eff << "\n";
+      std::cout << "delta_t = inv(cMt_nom) * cMt_eff:\n" << delta_t << "\n";
+      std::cout << "Runtime desired transformation cdMo:\n" << cdMo << "\n";
+      std::cout << "Runtime desired pose cdPo_runtime:\n" << cdPo_runtime << "\n";
+      return;
+    }
+
+    // calibrated_parameterized_offset:
+    // Use cPt.yaml from calibration_cpp's tooling extrinsics pipeline, then apply pure tool-z stand-off.
+    require_yaml_file(cPt_filename, "Calibration camera-to-tooling YAML");
+    cPt.loadYAML(cPt_filename, cPt);
+    cMt_calib.buildFrom(cPt);
+    cdMo = cMt_calib * tMo_des;
+    save_runtime_cdPo();
+
+    std::cout << "calibrated_parameterized_offset mode selected.\n";
+    std::cout << "Read calibrated cPt/cMt from file: " << cPt_filename << "\ncMt_calib:\n" << cMt_calib << "\n";
+    std::cout << "desired_offset_d_m   = " << desired_offset_d_m << "\n";
+    std::cout << "Runtime desired transformation cdMo = cMt_calib * tMo_des:\n" << cdMo << "\n";
+    std::cout << "Runtime desired pose cdPo_runtime:\n" << cdPo_runtime << "\n";
+  }
+
+  void safe_stop_robot(const char *where)
   {
     try
     {
@@ -176,56 +342,15 @@ private:
 
   void initialization()
   {
+    // Build cdMo once at startup according to selected desired-alignment mode.
+    setup_desired_alignment_transform();
+
     //! [Robot connection]
     std::cout << "Attempt to establish connection..." << std::endl;
     robot.connect(robot_ip);
     std::cout << "WARNING: This program will move the robot! "
               << "Please make sure to have the user stop button at hand!" << std::endl;
     //! [Robot connection]
-
-    // Get camera extrinsics:
-    ePc.loadYAML(eMc_filename, ePc);
-    eMc.buildFrom(ePc);
-    std::cout << "Read extrinsic parameters from file. eMc:\n" << eMc << "\n";
-
-    // Get tool extrinsics from manual TCP yaml:
-    ePt.loadYAML(eMt_filename, ePt);
-    eMt.buildFrom(ePt);
-    std::cout << "Read tool parameters from file. eMt:\n" << eMt << "\n";
-
-    // Read saved reference aligned pose:
-    cdPo.loadYAML(cdMo_filename, cdPo);
-    cdMo_saved.buildFrom(cdPo);
-    std::cout << "Read saved reference pose from file. cdMo_saved:\n" << cdMo_saved << "\n";
-
-    // Nominal camera-to-tooling from current eMc and eMt
-    cMt_nom = eMc.inverse() * eMt;
-    std::cout << "Nominal cMt = inv(eMc) * eMt:\n" << cMt_nom << "\n";
-
-    // Build reference and desired tooling->object offset transforms
-    for (unsigned int i = 0; i < 6; ++i)
-    {
-      tPo_ref[i] = 0.0;
-      tPo_des[i] = 0.0;
-    }
-    // For this tooling/TCP convention, that corresponds to negative tool-z in tPo.
-    tPo_ref[2] = -reference_offset_d_m;
-    tPo_des[2] = -desired_offset_d_m;
-    tMo_ref.buildFrom(tPo_ref);
-    tMo_des.buildFrom(tPo_des);
-
-    // Infer effective cMt from the saved aligned pose at the reference offset, then reconstruct the runtime desired cdMo for the current desired offset.
-    cMt_eff = cdMo_saved * tMo_ref.inverse();
-    delta_t = cMt_nom.inverse() * cMt_eff;
-    cdMo = cMt_nom * delta_t * tMo_des;
-    cdPo_runtime.buildFrom(cdMo);
-
-    std::cout << "reference_offset_d_m = " << reference_offset_d_m << "\n";
-    std::cout << "desired_offset_d_m   = " << desired_offset_d_m << "\n";
-    std::cout << "Effective cMt inferred from saved cdPo:\n" << cMt_eff << "\n";
-    std::cout << "delta_t = inv(cMt_nom) * cMt_eff:\n" << delta_t << "\n";
-    std::cout << "Runtime desired transformation cdMo:\n" << cdMo << "\n";
-    std::cout << "Runtime desired pose cdPo_runtime:\n" << cdPo_runtime << "\n";
 
     robot.set_eMc(eMc); // Set location of the camera wrt end-effector frame
     robot.setRobotState(vpRobot::STATE_VELOCITY_CONTROL);

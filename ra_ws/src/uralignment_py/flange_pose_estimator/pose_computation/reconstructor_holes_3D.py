@@ -1,5 +1,5 @@
 import numpy as np
-from ur_alignment.flange_pose_estimator.utility_classes import Hole
+from flange_pose_estimator.utility_classes import Hole
 
 from .pose_computation_core import PoseEstimatorCore
 from .reconstructor_projected_circle import ReconstructorProjectedCircle

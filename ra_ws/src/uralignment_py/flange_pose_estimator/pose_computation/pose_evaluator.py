@@ -1,7 +1,7 @@
 import numpy as np  
 
-from ur_alignment.flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
-from ur_alignment.flange_pose_estimator.utility_classes import Hole
+from flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
+from flange_pose_estimator.utility_classes import Hole
 
 
 class PoseEvaluator(PoseEstimatorCore):

@@ -48,7 +48,7 @@ RUN pip install --break-system-packages \
 RUN python3 -m pip install --break-system-packages pyrealsense2 
 
 # Add src/ to Python path for imports
-ENV PYTHONPATH=/home/$USERNAME/ur_alignment_ws/src:$PYTHONPATH
+ENV PYTHONPATH=/home/$USERNAME/ra_ws/src:$PYTHONPATH
 
 # ------------------------------------------------------------
 # Install C++ dependencies
@@ -115,7 +115,7 @@ RUN set -eux; \
 # Setup ROS 2 workspace
 # ------------------------------------------------------------
 RUN echo 'source /opt/ros/jazzy/setup.bash' >> /home/$USERNAME/.bashrc && \
-     echo '[ -f /home/'"$USERNAME"'/ur_alignment_ws/install/setup.bash ] && source /home/'"$USERNAME"'/ur_alignment_ws/install/setup.bash' >> /home/$USERNAME/.bashrc \
+     echo '[ -f /home/'"$USERNAME"'/ra_ws/install/setup.bash ] && source /home/'"$USERNAME"'/ra_ws/install/setup.bash' >> /home/$USERNAME/.bashrc \
      && echo 'export CMAKE_PREFIX_PATH=/usr/local:$CMAKE_PREFIX_PATH' >> /home/$USERNAME/.bashrc
 
 # ------------------------------------------------------------

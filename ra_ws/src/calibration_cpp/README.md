@@ -262,6 +262,28 @@ Because the package uses ROS 2, OpenCV, `cv_bridge`, ViSP, Eigen, and UR RTDE in
 
 ### 1) Intrinsics calibration
 
+Update a configuration YAML to update/add intrinsics for the correct camera serial number
+```bash
+cd ~/Robot-Alignment/ra_ws/src/calibration_cpp/config
+code intrinsics_calib.params.yaml
+```
+Find the section defining ROS parameters and edit the information prior to running calibration:
+Example and Section of Interest:
+```txt
+  ros__parameters:
+    # Inputs
+    image_topic: /camera/color/image_raw
+
+    # Board: 18x25 squares -> inner corners = 17x24
+    board_cols: 24
+    board_rows: 17
+    square_size_m: 0.0075 # 7.5 mm squares
+
+    # Output naming
+    serial: "327122073214"
+```
+Note: This will update/create the calibration script for the serial number specified. Serial Autodetect does not apply here and must be manually typed into this configuration file.
+
 Start the image publisher first, then run:
 
 ```bash

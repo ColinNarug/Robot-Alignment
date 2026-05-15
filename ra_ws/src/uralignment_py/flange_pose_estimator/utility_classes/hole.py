@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Optional, Dict
-from ur_alignment.flange_pose_estimator.utility_classes import Ellipse  
+from flange_pose_estimator.utility_classes import Ellipse  
 
 
 

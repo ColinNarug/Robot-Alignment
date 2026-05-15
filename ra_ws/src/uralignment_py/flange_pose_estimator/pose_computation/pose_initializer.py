@@ -5,7 +5,7 @@ from spatialmath import SE3
 from .matcher_smart import MatcherSmart
 from .matcher_brute_force import MatcherBruteForce
 from .pose_computation_core import PoseEstimatorCore
-from ur_alignment.flange_pose_estimator.utility_classes import Hole, Ellipse
+from flange_pose_estimator.utility_classes import Hole, Ellipse
 
 
 

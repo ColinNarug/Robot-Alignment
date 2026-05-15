@@ -1,12 +1,12 @@
 import numpy as np
 from spatialmath import SE3
 
-from ur_alignment.flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
+from flange_pose_estimator.pose_computation.pose_computation_core import PoseEstimatorCore
 from .pose_initializer import PoseInitializer
 from .reconstructor_holes_3D import ReconstructorHoles3D
 from .pose_refiner import PoseRefiner
 from .pose_evaluator import PoseEvaluator
-from ur_alignment.flange_pose_estimator.utility_classes import Timer, Params, Image, Hole
+from flange_pose_estimator.utility_classes import Timer, Params, Image, Hole
 
 
 class PoseEstimator(PoseEstimatorCore):

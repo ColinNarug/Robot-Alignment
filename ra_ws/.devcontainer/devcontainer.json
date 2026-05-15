@@ -1,6 +1,6 @@
 {
   // Name of the Dev Container (shown in VS Code)
-  "name": "UR Alignment Dev Container",
+  "name": "Robot-Alignment ra_ws Dev Container",
 
   // Run container with full privileges (like --privileged in Docker)
   "privileged": true,
@@ -22,8 +22,8 @@
   },
 
   // Workspace paths
-  "workspaceFolder": "/home/ur_user/ur_alignment_ws",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/home/ur_user/ur_alignment_ws,type=bind",
+  "workspaceFolder": "/home/ur_user/ra_ws",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/ur_user/ra_ws,type=bind",
 
   // VS Code extensions to install automatically
   "customizations": {
@@ -46,7 +46,7 @@
     "ROS_AUTOMATIC_DISCOVERY_RANGE": "SUBNET",        // ROS 2 discovery limited to subnet
   "ROS_DOMAIN_ID": "${localEnv:ROS_DOMAIN_ID:42}",    // ROS 2 domain for isolation
     "COLCON_LOG_PATH": "/home/ur_user/.colcon/logs",
-    "WS_DIR": "/home/ur_user/ur_alignment_ws",        // Workspace path inside container
+    "WS_DIR": "/home/ur_user/ra_ws",        // Workspace path inside container
     "CMAKE_PREFIX_PATH": "/usr/local:${localEnv:CMAKE_PREFIX_PATH}"
   },
 
@@ -98,5 +98,5 @@
   "initializeCommand": "bash -lc 'command -v xhost >/dev/null 2>&1 && xhost +SI:localuser:$(whoami) || true'",
 
   // Run inside the container after creation
-  "postCreateCommand": "sudo rosdep update && sudo rosdep install --from-paths src --ignore-src -y && sudo chown -R $(whoami) /home/ur_user/ur_alignment_ws/"
+  "postCreateCommand": "sudo rosdep update && sudo rosdep install --from-paths src --ignore-src -y && sudo chown -R $(whoami) /home/ur_user/ra_ws/"
 }

@@ -7,12 +7,12 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 
 ## --- change here to your preferred default workspace path --- ##
-WS_HOST="${WS_HOST:-$HOME/Robot-Alignment/ur_alignment_ws}"
+WS_HOST="${WS_HOST:-$HOME/Robot-Alignment/ra_ws}"
 ## ------------------------------------------------------------ ##
 
 IMAGE="${IMAGE:-ur-alignment-img}"
 NAME="${NAME:-ur-alignment-container}"
-WS_CONT="${WS_CONT:-/home/ur_user/ur_alignment_ws}"
+WS_CONT="${WS_CONT:-/home/ur_user/ra_ws}"
 
 REMOVE_ON_EXIT="${REMOVE_ON_EXIT:-1}"   # 1: --rm on exit
 TTY="${TTY:-1}"                         # 1: -it, 0: -i

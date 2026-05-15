@@ -5,7 +5,7 @@ import copy
 from spatialmath import SE3
 
 
-from ur_alignment.flange_pose_estimator.utility_classes import Params, Image, Hole, Ellipse
+from flange_pose_estimator.utility_classes import Params, Image, Hole, Ellipse
 
 
 

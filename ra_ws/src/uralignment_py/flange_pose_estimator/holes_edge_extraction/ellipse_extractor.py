@@ -6,7 +6,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from ur_alignment.flange_pose_estimator.utility_classes import Ellipse
+from flange_pose_estimator.utility_classes import Ellipse
  
 
 class EllipseExtractor:

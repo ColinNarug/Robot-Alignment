@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional
 
-from ur_alignment.flange_pose_estimator.utility_classes import Ellipse, Hole
+from flange_pose_estimator.utility_classes import Ellipse, Hole
 from .reconstructor_projected_circle import ReconstructorProjectedCircle
 from .pose_computation_core import PoseEstimatorCore
 

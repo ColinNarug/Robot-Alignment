@@ -5,7 +5,7 @@ from supervision.tracker.byte_tracker.core import ByteTrack
 from dataclasses import dataclass, field
 from typing import Tuple, List, Any
 
-from ur_alignment.flange_pose_estimator.utility_classes import Params, Timer
+from flange_pose_estimator.utility_classes import Params, Timer
 
 
 # --------------------------------------------------------------------------- #

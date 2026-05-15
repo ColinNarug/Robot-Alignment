@@ -1,6 +1,6 @@
 import numpy as np
 
-from ur_alignment.flange_pose_estimator.utility_classes import Hole
+from flange_pose_estimator.utility_classes import Hole
 
 
 

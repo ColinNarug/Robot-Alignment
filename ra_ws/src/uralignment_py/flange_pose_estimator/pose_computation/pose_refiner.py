@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 from spatialmath import SE3
 
-from ur_alignment.flange_pose_estimator.utility_classes import Image, Hole
+from flange_pose_estimator.utility_classes import Image, Hole
 from .pose_computation_core import PoseEstimatorCore
 
 

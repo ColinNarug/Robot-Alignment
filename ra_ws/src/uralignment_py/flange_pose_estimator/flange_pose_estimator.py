@@ -166,69 +166,111 @@ class FlangePoseEstimator():
 
     def get_pose(self, frame: np.ndarray) -> Tuple[bool, Optional[SE3]]:
         """
-        Processes a frame to estimate the pose of a flange.         
-
-        -> The pose of the flange is defined with the z axis perpendicular to the flange plane, pointing outward,   
-        and the x,y axes initialized at random, and kept consistent when possible.  
-        With "set_initial_pose()" it's possible to choose an initial flange pose.
-
-        -> The pose of the camera follows the OpenCV default convention for cameras.    
-
-        Args:
-            frame (np.ndarray) -> The input image frame.
+        Processes a frame to estimate the pose of a flange.
 
         Returns:
-            success (bool) -> Whether pose estimation was successful     
-            T (SE3 | None) -> Estimated flange pose relative to the camera frame (None if failed)    
+            success (bool) -> Whether pose estimation was successful
+            T (SE3 | None) -> Estimated flange pose relative to the camera frame
         """
 
         self.init_pose_estimation()
+        self.last_failure_reason = "unknown"
+        self.last_holes_detected = 0
+        self.last_ellipses = 0
 
-        # PICTURE SETUP 
-        self.image = Image(frame, self.params, undistort = True)
+        # --------------------------------
+        # PICTURE SETUP
+        # --------------------------------
+        try:
+            self.image = Image(frame, self.params, undistort=True)
+        except Exception as exc:
+            self.last_failure_reason = f"image setup/undistort failed: {exc}"
+            return False, None
 
         # --------------------------------
         # HOLES DETECTION
-        # --------------------------------   
-        self.success, holes_detected = self.detector.detect(self.image.frame)
-        if not self.success: return None 
+        # --------------------------------
+        try:
+            self.success, holes_detected = self.detector.detect(self.image.frame)
+        except Exception as exc:
+            self.last_failure_reason = f"holes detection exception: {exc}"
+            return False, None
+
+        try:
+            self.last_holes_detected = len(holes_detected) if holes_detected is not None else 0
+        except Exception:
+            self.last_holes_detected = -1
+
+        if not self.success or holes_detected is None or self.last_holes_detected <= 0:
+            self.last_failure_reason = (
+                f"holes detection failed: success={self.success}, "
+                f"holes_detected={self.last_holes_detected}"
+            )
+            return False, None
+
         # ------------------------------------------
         # HOLES ELLIPSE CONTOUR EXTRACTION
         # ------------------------------------------
-        for hole_detected in holes_detected:        
-            # ------------------------------------------
-            # RANSAC METHOD
-            # ------------------------------------------
-            if self.params.method_choice == 0:  
-                # COARSE CONTOUR EXTRACTION
-                ROI_canny = self.image_processor.get_edge(hole_detected.ROI)
-                # ELLIPSE FITTING (RANSAC)
-                self.success, best_ellipse = self.ellipse_fitter.get_ellipse(ROI_canny, hole_detected.ROI_coordinates, hole_detected.ID)
-                if self.success: self.image.ellipses.append(best_ellipse)
-                
-            # ------------------------------------------
-            # SEGMENTATION METHOD
-            # ------------------------------------------
-            else:
-                # ELLIPSE EXTRACTION (SEGMENTATION)
-                self.success, best_ellipse = self.ellipse_extractor.get_ellipse(hole_detected.ROI, hole_detected.ROI_coordinates, hole_detected.ID)
-                if self.success: self.image.ellipses.append(best_ellipse)
+        for hole_detected in holes_detected:
+            try:
+                if self.params.method_choice == 0:
+                    ROI_canny = self.image_processor.get_edge(hole_detected.ROI)
+                    self.success, best_ellipse = self.ellipse_fitter.get_ellipse(
+                        ROI_canny,
+                        hole_detected.ROI_coordinates,
+                        hole_detected.ID
+                    )
+                else:
+                    self.success, best_ellipse = self.ellipse_extractor.get_ellipse(
+                        hole_detected.ROI,
+                        hole_detected.ROI_coordinates,
+                        hole_detected.ID
+                    )
+
+                if self.success:
+                    self.image.ellipses.append(best_ellipse)
+
+            except Exception as exc:
+                self.last_failure_reason = (
+                    f"ellipse extraction exception on hole ID "
+                    f"{getattr(hole_detected, 'ID', 'unknown')}: {exc}"
+                )
+                return False, None
+
+        self.last_ellipses = len(self.image.ellipses)
 
         self.success = self.image.get_contour_extraction_status()
-        if not self.success: None
-      
+        if not self.success:
+            self.last_failure_reason = (
+                f"ellipse contour extraction failed: "
+                f"holes_detected={self.last_holes_detected}, "
+                f"ellipses={self.last_ellipses}, "
+                f"method_choice={self.params.method_choice}"
+            )
+            return False, None
+
         # ------------------------------------------
         # POSE EXTRACTION FROM ELLIPSE
         # ------------------------------------------
-        self.success, self.T = self.pose_estimator.get_pose(self.image)     
-        if not self.success: None
-        
-        return self.success, self.T
+        try:
+            self.success, self.T = self.pose_estimator.get_pose(self.image)
+        except Exception as exc:
+            self.last_failure_reason = (
+                f"pose extraction exception: "
+                f"holes_detected={self.last_holes_detected}, "
+                f"ellipses={self.last_ellipses}, "
+                f"error={exc}"
+            )
+            return False, None
 
+        if not self.success or self.T is None:
+            self.last_failure_reason = (
+                f"pose extraction failed: "
+                f"holes_detected={self.last_holes_detected}, "
+                f"ellipses={self.last_ellipses}"
+            )
+            return False, None
 
-
-
-            
-
-
+        self.last_failure_reason = ""
+        return True, self.T
 

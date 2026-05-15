@@ -1,5 +1,5 @@
 import numpy as np
-from ur_alignment.flange_pose_estimator.utility_classes import Ellipse
+from flange_pose_estimator.utility_classes import Ellipse
 
 
 class EllipseFitter:

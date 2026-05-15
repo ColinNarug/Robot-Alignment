@@ -259,7 +259,11 @@ class MarkerlessPoseEstimator(Node):
 
         ok, T = self._estimate_pose(bgr)
         if not ok or T is None:
-            self._warn_throttled('Markerless pose estimation failed')
+            reason = getattr(self.estimator, 'last_failure_reason', '')
+            if reason:
+                self._warn_throttled(f'Markerless pose estimation failed: {reason}')
+            else:
+                self._warn_throttled('Markerless pose estimation failed')
             return
 
         self._publish_cmo(msg.header, T)
@@ -331,9 +335,12 @@ def main(args=None) -> None:
     node = MarkerlessPoseEstimator()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
