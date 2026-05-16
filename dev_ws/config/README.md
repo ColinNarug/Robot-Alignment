@@ -12,7 +12,7 @@ It covers:
 4. Creating a Clonezilla boot USB.
 5. Reaching the point where Clonezilla can be used to clone an empty drive.
 
-The actual Clonezilla save/restore operation can be documented separately with the recorded video. Or, follow the Clonezilla online documentation: https://clonezilla.org//clonezilla-live-doc.php
+The actual Clonezilla save/restore operation can be documented separately with the recorded video [Watch Video](https://github.com/ColinNarug/Robot-Alignment/releases/download/clonezilla-operation-video/Clonezilla.mp4). Or, follow the Clonezilla online documentation: https://clonezilla.org//clonezilla-live-doc.php
 
 ---
 
@@ -436,7 +436,7 @@ You should have:
 ---
 
 ## 11. What the Clonezilla video should cover
-
+[Watch Video](https://github.com/ColinNarug/Robot-Alignment/releases/download/clonezilla-operation-video/Clonezilla.mp4)
 [https://clonezilla.org//clonezilla-live-doc.php](https://clonezilla.org//fine-print-live-doc.php?path=clonezilla-live/doc/03_One_image_to_multiple_disks)
 The Clonezilla operation documentation/video should show:
 ### Image creation
